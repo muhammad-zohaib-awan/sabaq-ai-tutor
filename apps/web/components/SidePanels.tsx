@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { t } from '@/lib/i18n';
+import { useApp } from '@/lib/state';
+import { api } from '@/lib/api';
 
 /** Evidence bar: filled proportion of a dotted track, or nothing at all. */
 function EvidenceBar({ value, evidence }: { value: number; evidence: number }) {
@@ -188,6 +190,85 @@ export function LevelCard({
         {t('nextMission', lang)} {Math.round(threshold * 100)}% {t('mastery', lang)}
         {mastery?.hasEvidence ? ` · now ${Math.round(mastery.overall * 100)}%` : ''}.
       </p>
+    </section>
+  );
+}
+
+export function LiveTestPanel({ onBuildClick }: { onBuildClick: () => void }) {
+  const { lang, journey, setJourney, refreshState, toast } = useApp();
+  const [learnerType, setLearnerType] = useState(journey?.learnerType || 'Nursing trainee');
+  const [constraint, setConstraint] = useState(journey?.constraint || 'standard');
+  const [busy, setBusy] = useState(false);
+
+  const LEARNER_TYPES = ['Nursing trainee', 'Bank branch officer', 'Call centre agent', 'New joiner (any role)', 'School student', 'Compliance analyst', 'Software engineer'];
+  const CONSTRAINTS = [
+    { id: 'standard', label: 'Standard' },
+    { id: 'low_bandwidth', label: 'Low bandwidth' },
+    { id: 'voice_only', label: 'Voice only' },
+    { id: 'accessibility', label: 'Accessibility' },
+    { id: 'offline_first', label: 'Offline first' },
+  ];
+
+  async function rebuild() {
+    if (!journey) return;
+    setBusy(true);
+    try {
+      const res = await api.build({
+        topic: journey.topic,
+        text: '',
+        learnerType,
+        language: lang,
+        constraint,
+        difficulty: journey.difficulty,
+      });
+      const newJourney = res.journey ?? res;
+      setJourney(newJourney);
+      await refreshState(newJourney.id);
+      toast('success', 'Journey rebuilt with new settings');
+    } catch (e: any) {
+      toast('error', e?.message || 'Could not rebuild');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel p-5">
+      <header className="flex items-center justify-between gap-3">
+        <h2 className="text-lg font-bold">Live Test Config</h2>
+      </header>
+
+      <div className="mt-4 space-y-3">
+        <div>
+          <span className="text-xs font-semibold text-slate-400">Content</span>
+          <div className="flex items-center justify-between mt-1">
+            <span className="text-sm truncate max-w-[150px]">{journey?.sourceName || 'Topic'}</span>
+            <button onClick={onBuildClick} className="btn-ghost text-xs px-2 py-1">Change content</button>
+          </div>
+        </div>
+
+        <div>
+          <span className="text-xs font-semibold text-slate-400">Learner Type</span>
+          <select value={learnerType} onChange={e => setLearnerType(e.target.value)} className="field mt-1 text-sm py-1.5">
+            {LEARNER_TYPES.map(l => <option key={l}>{l}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <span className="text-xs font-semibold text-slate-400">Constraint</span>
+          <select value={constraint} onChange={e => setConstraint(e.target.value)} className="field mt-1 text-sm py-1.5">
+            {CONSTRAINTS.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+        </div>
+
+        <button 
+          onClick={rebuild}
+          disabled={busy}
+          className="mt-4 w-full btn-primary"
+        >
+          {busy ? 'Building...' : 'Apply & Rebuild'}
+        </button>
+      </div>
     </section>
   );
 }

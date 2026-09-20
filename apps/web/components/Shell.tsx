@@ -10,17 +10,31 @@ import { isMuted, setMuted } from '@/lib/sound';
 import { LiveTestModal } from './LiveTestModal';
 import { BadgeUnlock } from './BadgeUnlock';
 import { Toasts } from './Toasts';
+import { OnboardingModal } from './OnboardingModal';
 
 const LANGS: Lang[] = ['en', 'ur', 'mix'];
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  const { ready, user, setUser, lang, setLang, learnState, degraded } = useApp();
+  const { ready, user, setUser, setJourney, lang, setLang, learnState, degraded } = useApp();
   const pathname = usePathname();
   const router = useRouter();
   const [liveTest, setLiveTest] = useState(false);
   const [muted, setMutedState] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
-  useEffect(() => setMutedState(isMuted()), []);
+  useEffect(() => {
+    setMutedState(isMuted());
+    const onOpenLiveTest = () => setLiveTest(true);
+    window.addEventListener('openLiveTest', onOpenLiveTest);
+    return () => window.removeEventListener('openLiveTest', onOpenLiveTest);
+  }, []);
+
+  // Show onboarding modal for learners who haven't set their name yet
+  useEffect(() => {
+    if (user?.role === 'learner' && !localStorage.getItem('sabaq.onboarded')) {
+      setShowOnboarding(true);
+    }
+  }, [user]);
 
   useEffect(() => {
     if (!ready) return;
@@ -38,27 +52,24 @@ export function Shell({ children }: { children: React.ReactNode }) {
     ...(isAdmin
       ? [
           { href: '/configure', label: t('configure', lang) },
-          { href: '/insights', label: t('insights', lang) },
+          { href: '/insights', label: 'Dashboard' },
         ]
       : []),
   ];
 
-  async function switchRole(role: 'admin' | 'learner') {
-    try {
-      const res = await api.demoLogin(role);
-      session.set(res.token, res.user);
-      setUser(res.user);
-      router.replace(role === 'admin' ? '/' : '/');
-      router.refresh();
-    } catch {
-      /* the toast layer reports failures from the calling page */
-    }
+  function logout() {
+    session.clear();
+    setUser(null);
+    setJourney(null);
+    router.replace('/login');
+    router.refresh();
   }
 
   return (
     <div className="min-h-screen">
       <header className="sticky top-0 z-40 border-b border-white/5 bg-ink-900/90 backdrop-blur">
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+          {/* BUG 12: Home icon clickable — link to / */}
           <Link href="/" className="flex shrink-0 items-center gap-2.5">
             <span className="grid h-9 w-9 place-items-center rounded-xl bg-accent/20 text-accent">
               <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2">
@@ -99,6 +110,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <span className="tabular-nums font-semibold">{progress?.xp ?? 0} XP</span>
             </div>
 
+            {/* Language switcher */}
             <div className="flex overflow-hidden rounded-xl border border-white/10">
               {LANGS.map((l) => (
                 <button
@@ -114,18 +126,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
               ))}
             </div>
 
-            <label className="flex items-center gap-2 text-xs text-slate-400">
-              <span className="hidden sm:inline">{t('viewingAs', lang)}</span>
-              <select
-                value={user?.role ?? 'learner'}
-                onChange={(e) => switchRole(e.target.value as 'admin' | 'learner')}
-                className="rounded-xl border border-white/10 bg-ink-800 px-2.5 py-1.5 text-xs font-semibold text-slate-100"
-              >
-                <option value="admin">{t('admin', lang)}</option>
-                <option value="learner">{t('learner', lang)}</option>
-              </select>
-            </label>
+            {/* BUG 1: "Viewing as" dropdown REMOVED — role is set at login only */}
 
+            {/* Mute toggle */}
             <button
               onClick={() => {
                 const v = !muted;
@@ -148,8 +151,23 @@ export function Shell({ children }: { children: React.ReactNode }) {
               )}
             </button>
 
-            <button className="btn-primary" onClick={() => setLiveTest(true)}>
-              {t('liveTest', lang)}
+            {/* Live Test button (admin only) */}
+            {isAdmin && (
+              <button className="btn-primary" onClick={() => setLiveTest(true)}>
+                {t('liveTest', lang)}
+              </button>
+            )}
+
+            {/* BUG 11: Logout button */}
+            <button
+              onClick={logout}
+              title="Logout"
+              className="flex items-center gap-1.5 rounded-xl border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/5"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Logout
             </button>
           </div>
         </div>
@@ -164,6 +182,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <main className="mx-auto max-w-[1500px] px-4 py-6">{children}</main>
 
       {liveTest && <LiveTestModal onClose={() => setLiveTest(false)} />}
+      {showOnboarding && (
+        <OnboardingModal onDone={() => {
+          localStorage.setItem('sabaq.onboarded', '1');
+          setShowOnboarding(false);
+        }} />
+      )}
       <BadgeUnlock />
       <Toasts />
     </div>

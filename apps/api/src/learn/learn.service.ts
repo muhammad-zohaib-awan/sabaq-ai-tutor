@@ -10,6 +10,7 @@ import {
   inferMastery,
   progressFromXp,
   sampleJourney,
+  completeWithFallback,
   type BuildJourneyInput,
   type Journey,
   type Language,
@@ -525,5 +526,62 @@ export class LearnService {
       hint: el?.hint ?? 'Go back to what the source said about this part.',
       xpCost: config.hintPenaltyXp,
     };
+  }
+
+  async generateMermaidDiagram(journeyId: string) {
+    const journey = await this.get(journeyId);
+    const config = await this.cfg.get();
+    const prompt = `Return ONLY valid Mermaid code (graph TD or flowchart) for a labeled educational diagram of "${journey.topic}". No markdown. No explanation. Just the Mermaid code.`;
+    const res = await completeWithFallback(
+      { system: prompt, user: 'Draw it.', json: false, maxTokens: 1024 },
+      config.providerOrder,
+      15000,
+      (m) => this.log.log(m)
+    );
+    const code = res?.text?.replace(/```mermaid\n|```/g, '').trim() ?? '';
+    return { mermaidCode: code };
+  }
+
+  async generateSvgDiagram(journeyId: string) {
+    const journey = await this.get(journeyId);
+    const config = await this.cfg.get();
+    const prompt = `You are an expert infographic designer. Create a detailed, visually rich educational infographic as valid SVG for the topic: "${journey.topic}".
+
+STRICT RULES — follow every one:
+1. Return ONLY raw SVG code. No markdown, no backticks, no explanation, no XML declaration.
+2. Start directly with <svg and end with </svg>.
+3. Use viewBox="0 0 900 600" width="900" height="600".
+4. Dark background: fill the entire canvas with a rect fill="#0f172a" (dark navy).
+
+DESIGN REQUIREMENTS:
+- Title bar at top: large bold white title text for the topic.
+- Divide into 4–6 clearly labeled sections using colored rounded rectangles as section cards.
+- Each section card: rounded rect with semi-transparent colored fill (use variety: blue #1e40af, teal #0f766e, purple #6d28d9, amber #92400e, rose #9f1239 — all at 30–40% opacity), white border (stroke="#ffffff" stroke-opacity="0.15"), padding inside.
+- Inside each card: bold white section header text, then 2–4 bullet-point style facts as smaller white/light-gray text (use ● or → as bullet prefix).
+- Use colored accent circles or icons (simple geometric shapes: circles, triangles, arrows) as visual markers.
+- Add directional arrows (→ or curved SVG paths) between sections to show flow or sequence if the topic is a process.
+- Add a small legend or key section at the bottom if relevant.
+- Use font-family="system-ui, sans-serif" throughout.
+- All text must be clearly readable against the dark background.
+- Make it visually professional, like a slide you would show in a class or training session.
+- Minimum 400 words worth of labeled content distributed across the infographic.
+
+Topic: "${journey.topic}"
+
+Return the complete SVG infographic now.`;
+
+    const res = await completeWithFallback(
+      { system: prompt, user: `Generate the infographic SVG for: ${journey.topic}`, json: false, maxTokens: 4096 },
+      config.providerOrder,
+      25000,
+      (m) => this.log.log(m)
+    );
+    const raw = res?.text ?? '';
+    // Strip any markdown fences
+    const svg = raw
+      .replace(/```(?:xml|svg|html)?\n?/gi, '')
+      .replace(/```/g, '')
+      .trim();
+    return { svg };
   }
 }

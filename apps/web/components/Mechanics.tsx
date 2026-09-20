@@ -42,7 +42,12 @@ export function OrderWidget({
   }
 
   return (
-    <ol className="space-y-2">
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 rounded-xl border border-accent/20 bg-accent/5 px-3 py-2 text-xs text-slate-300">
+        <span>↕️</span>
+        <span>Drag the items into the correct order, or use the ▲ ▼ arrows. Then click <strong className="text-slate-100">Check the order</strong>.</span>
+      </div>
+      <ol className="space-y-2">
       {items.map((item: any, i: number) => (
         <li
           key={item.id}
@@ -85,7 +90,8 @@ export function OrderWidget({
           </div>
         </li>
       ))}
-    </ol>
+      </ol>
+    </div>
   );
 }
 

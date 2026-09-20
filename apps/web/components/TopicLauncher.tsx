@@ -32,6 +32,7 @@ const LEARNER_SUGGESTIONS = [
   'Class 9 student',
   'Compliance analyst',
   'New joiner, first week',
+  'Other – AI will infer from my topic',
 ];
 
 const CONSTRAINTS = [
@@ -40,6 +41,7 @@ const CONSTRAINTS = [
   { id: 'voice_only', label: 'Voice only' },
   { id: 'accessibility', label: 'Accessibility first' },
   { id: 'offline_first', label: 'Offline first' },
+  { id: 'auto', label: 'Other – AI will infer best fit' },
 ];
 
 export function TopicLauncher() {

@@ -137,8 +137,7 @@ export default function InsightsPage() {
         <div>
           <h1 className="text-3xl font-extrabold tracking-tight">Insights</h1>
           <p className="mt-1 text-sm text-slate-400">
-            Learner, engagement, mastery, usage and outcome views · window of {data.windowDays} days ·
-            storage: {data.storageMode}
+            Last {data.windowDays} days
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -164,8 +163,9 @@ export default function InsightsPage() {
       </header>
 
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-white/5 bg-ink-800/60 px-4 py-2.5 text-xs">
+        {/* Bug 9: simplified SMTP status */}
         <span className={`chip ${mailStatus?.smtpConfigured ? 'bg-good/20 text-good' : 'bg-amber-400/15 text-amber-200'}`}>
-          {mailStatus?.smtpConfigured ? 'SMTP configured' : 'SMTP not configured'}
+          {mailStatus?.smtpConfigured ? 'Email: Ready' : 'Email: Not set'}
         </span>
         <label className="flex items-center gap-2 text-slate-400">
           Send to
@@ -176,10 +176,6 @@ export default function InsightsPage() {
             placeholder="admin@ubl.com.pk"
           />
         </label>
-        <span className="text-slate-600">
-          The workbook has seven sheets: summary, learners, engagement, mastery distribution, missions,
-          AI providers and the configuration snapshot.
-        </span>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

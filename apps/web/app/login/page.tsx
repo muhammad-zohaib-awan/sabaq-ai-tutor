@@ -24,7 +24,7 @@ export default function LoginPage() {
     } catch (e: any) {
       setError(
         e?.message?.includes('fetch')
-          ? 'Cannot reach the API. If it is on a free tier it may be waking up — try again in about 30 seconds.'
+          ? 'Cannot reach the API — try again in about 30 seconds.'
           : (e?.message ?? 'Sign in failed.'),
       );
     } finally {
@@ -35,6 +35,7 @@ export default function LoginPage() {
   return (
     <div className="grid min-h-screen place-items-center px-4 py-10">
       <div className="w-full max-w-md">
+        {/* Logo */}
         <div className="mb-8 text-center">
           <span className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-accent/20 text-accent">
             <svg viewBox="0 0 24 24" className="h-7 w-7" fill="none" stroke="currentColor" strokeWidth="2">
@@ -46,12 +47,8 @@ export default function LoginPage() {
         </div>
 
         <div className="panel p-6">
-          <p className="text-sm font-semibold text-slate-200">One-click demo sign-in</p>
-          <p className="mt-1 text-xs text-slate-500">
-            For the assessment panel — no password needed. Both roles share the same engine.
-          </p>
-
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {/* BUG 13: One-click demo sign-in — clean, no marketing copy */}
+          <div className="grid gap-3 sm:grid-cols-2">
             <button
               className="btn-primary"
               disabled={Boolean(busy)}
@@ -82,9 +79,7 @@ export default function LoginPage() {
             }}
           >
             <div>
-              <label className="label" htmlFor="email">
-                Email
-              </label>
+              <label className="label" htmlFor="email">Email</label>
               <input
                 id="email"
                 type="email"
@@ -96,9 +91,7 @@ export default function LoginPage() {
               />
             </div>
             <div>
-              <label className="label" htmlFor="password">
-                Password
-              </label>
+              <label className="label" htmlFor="password">Password</label>
               <input
                 id="password"
                 type="password"
@@ -120,11 +113,6 @@ export default function LoginPage() {
             </p>
           )}
         </div>
-
-        <p className="mt-6 text-center text-xs leading-relaxed text-slate-600">
-          Learner accounts see only their own mission and progress. Admin accounts additionally see
-          configuration and the reporting dashboard.
-        </p>
       </div>
     </div>
   );

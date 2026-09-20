@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { pick } from '@/lib/i18n';
+import { SmartDiagram } from './SmartDiagram';
 
 /**
  * The analogy plus two optional, key-less visual aids.
@@ -18,11 +19,24 @@ export function AnalogyCard({ journey, lang }: { journey: any; lang: any }) {
 
   if (!analogy && !journey.media?.imagePrompt) return null;
 
+  const [videoId, setVideoId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (journey.media?.videoSearchQuery) {
+      fetch(`/api/youtube?q=${encodeURIComponent(journey.media.videoSearchQuery)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.videoId) setVideoId(data.videoId);
+        })
+        .catch(console.error);
+    }
+  }, [journey.media?.videoSearchQuery]);
+
   const imgSrc = journey.media?.imagePrompt
     ? `https://image.pollinations.ai/prompt/${encodeURIComponent(journey.media.imagePrompt)}?width=880&height=520&nologo=true`
     : '';
-  const videoSrc = journey.media?.videoSearchQuery
-    ? `https://www.youtube.com/embed?listType=search&list=${encodeURIComponent(journey.media.videoSearchQuery)}`
+  const videoSrc = videoId
+    ? `https://www.youtube.com/embed/${videoId}`
     : '';
 
   return (
@@ -58,19 +72,11 @@ export function AnalogyCard({ journey, lang }: { journey: any; lang: any }) {
       </div>
 
       {show === 'image' && (
-        <figure className="animate-riseFade mt-4">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={imgSrc}
-            alt={`Illustrative diagram: ${journey.media.imagePrompt}`}
-            className="w-full rounded-xl border border-white/10 bg-white"
-            loading="lazy"
-          />
-          <figcaption className="mt-2 text-[11px] text-slate-500">
-            Generated illustration — a visual aid, not a source. The facts you are assessed on come from{' '}
-            {journey.sourceName}.
-          </figcaption>
-        </figure>
+        <SmartDiagram 
+          sessionId={journey.id}
+          imagePrompt={journey.media?.imagePrompt}
+          topicTitle={journey.topic}
+        />
       )}
 
       {show === 'video' && (

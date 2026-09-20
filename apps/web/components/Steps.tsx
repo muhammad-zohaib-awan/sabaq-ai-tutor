@@ -63,6 +63,8 @@ export function InquireStep({
   const [messages, setMessages] = useState<Array<{ role: 'learner' | 'persona'; text: string; grounded?: boolean }>>([
     { role: 'persona', text: spec?.openingLine ?? '' },
   ]);
+  const [askedQuestions, setAskedQuestions] = useState<Set<string>>(new Set());
+  const [hintShown, setHintShown] = useState(false);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [found, setFound] = useState<Set<string>>(new Set());
@@ -78,10 +80,16 @@ export function InquireStep({
     onProgress(found.size, total);
   }, [found, total, onProgress]);
 
+  // Available suggested questions = those not yet asked
+  const availableSuggestions = (spec?.suggestedQuestions ?? []).filter(
+    (q: string) => !askedQuestions.has(q)
+  );
+
   async function send(question: string) {
     const q = question.trim();
     if (!q || busy) return;
     setDraft('');
+    setAskedQuestions((prev) => new Set([...prev, q]));
     setMessages((m) => [...m, { role: 'learner', text: q }]);
     setBusy(true);
     try {
@@ -89,7 +97,7 @@ export function InquireStep({
         stepId: step.id,
         question: q,
         language: lang,
-        history: messages.slice(-6),
+        history: messages.slice(-8),
       });
       setMessages((m) => [...m, { role: 'persona', text: res.answer, grounded: res.grounded }]);
       if (res.factsSurfaced?.length) {
@@ -113,14 +121,50 @@ export function InquireStep({
     }
   }
 
+  // Generate a hint from un-surfaced facts
+  const nextHintFact = spec?.mustSurfaceFacts?.find((f: any) => !found.has(f.id));
+  const hintText = nextHintFact
+    ? `Try asking about: "${nextHintFact.hint ?? nextHintFact.fact?.split(' ').slice(0, 6).join(' ') + '…'}"`
+    : null;
+
   return (
     <div className="space-y-4">
+      {/* Walkthrough guide banner */}
+      <div className="flex items-start gap-3 rounded-2xl border border-accent/20 bg-accent/5 px-4 py-3">
+        <span className="mt-0.5 text-lg">💡</span>
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-accent-soft">What to do here</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-slate-300">
+            Ask <strong className="text-slate-100">{spec?.persona}</strong> questions about the topic. Try to surface all{' '}
+            <strong className="text-slate-100">{total} key points</strong>. Use the suggested questions or type your own. Click{' '}
+            <strong className="text-slate-100">Get a Hint</strong> if you're stuck.
+          </p>
+        </div>
+        {hintText && (
+          <button
+            onClick={() => setHintShown((v) => !v)}
+            className="shrink-0 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-400/20"
+          >
+            {hintShown ? 'Hide hint' : '🔍 Get a hint'}
+          </button>
+        )}
+      </div>
+
+      {/* Hint reveal */}
+      {hintShown && hintText && (
+        <div className="animate-riseFade flex items-center gap-2 rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-2.5 text-sm text-amber-100">
+          <span>🔑</span>
+          <span>{hintText}</span>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-slate-400">
           Talking to <span className="font-semibold text-slate-200">{spec?.persona}</span>
         </p>
-        <span className="chip bg-white/5 text-slate-300 tabular-nums">
+        <span className={`chip tabular-nums ${found.size >= total && total > 0 ? 'bg-good/20 text-good' : 'bg-white/5 text-slate-300'}`}>
           {found.size} / {total} key points surfaced
+          {found.size >= total && total > 0 && ' ✓'}
         </span>
       </div>
 
@@ -134,8 +178,8 @@ export function InquireStep({
             >
               {m.text}
               {m.role === 'persona' && m.grounded === false && (
-                <span className="mt-1.5 block text-[11px] text-amber-300/80">
-                  Not covered by the source — treated as unknown rather than guessed.
+                <span className="mt-1.5 block text-[11px] text-amber-300/70">
+                  ⚠️ Not directly in the source — try rephrasing or ask about something else.
                 </span>
               )}
             </div>
@@ -157,19 +201,17 @@ export function InquireStep({
         <div ref={endRef} />
       </div>
 
-      {spec?.suggestedQuestions?.length ? (
+      {/* Suggested questions — filtered to exclude already-asked ones */}
+      {availableSuggestions.length > 0 && (
         <div>
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
             {t('suggested', lang)}
           </p>
           <div className="flex flex-wrap gap-2">
-            {spec.suggestedQuestions.map((q: string) => (
+            {availableSuggestions.map((q: string) => (
               <button
                 key={q}
-                onClick={() => {
-                  sfxTap();
-                  void send(q);
-                }}
+                onClick={() => { sfxTap(); void send(q); }}
                 disabled={busy}
                 className="chip border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
               >
@@ -178,23 +220,23 @@ export function InquireStep({
             ))}
           </div>
         </div>
-      ) : null}
+      )}
+
+      {availableSuggestions.length === 0 && found.size < total && (
+        <p className="text-xs text-slate-500 text-center">
+          All suggested questions used — type your own or click <strong className="text-amber-300">Get a hint</strong> above.
+        </p>
+      )}
 
       <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void send(draft);
-        }}
+        onSubmit={(e) => { e.preventDefault(); void send(draft); }}
         className="flex flex-wrap items-end gap-2"
       >
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              void send(draft);
-            }
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(draft); }
           }}
           rows={2}
           className={`field flex-1 resize-none ${lang === 'ur' ? 'urdu' : ''}`}

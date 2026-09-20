@@ -201,30 +201,7 @@ export function LiveTestModal({ onClose }: { onClose: () => void }) {
           />
         </div>
 
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <div>
-            <span className="label">Learner type</span>
-            <select value={learnerType} onChange={(e) => setLearnerType(e.target.value)} className="field">
-              {LEARNER_TYPES.map((l) => (
-                <option key={l}>{l}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <span className="label">Operating constraint</span>
-            <select value={constraint} onChange={(e) => setConstraint(e.target.value)} className="field">
-              {CONSTRAINTS.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-[11px] text-slate-500">
-              {CONSTRAINTS.find((c) => c.id === constraint)?.help}
-            </p>
-          </div>
-        </div>
-
+        {/* Language + Difficulty row */}
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
           <div>
             <span className="label">Language</span>

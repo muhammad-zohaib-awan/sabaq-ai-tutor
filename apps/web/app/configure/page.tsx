@@ -294,57 +294,6 @@ export default function ConfigurePage() {
             </p>
           </div>
         </section>
-
-        <aside className="space-y-5">
-          <section className="panel p-5">
-            <h2 className="text-lg font-bold">AI provider chain</h2>
-            <p className="mt-1 text-xs leading-relaxed text-slate-500">
-              Tried in order. The first one that answers within the timeout wins; if every one fails the
-              deterministic offline builder takes over so the learner is never blocked.
-            </p>
-            <ol className="mt-4 space-y-2">
-              {(providers?.providers ?? []).map((p: any, i: number) => (
-                <li
-                  key={p.id}
-                  className="flex items-center justify-between rounded-xl border border-white/5 bg-ink-900/60 px-3 py-2"
-                >
-                  <span className="flex items-center gap-2.5 text-sm">
-                    <span className="grid h-5 w-5 place-items-center rounded-md bg-white/10 text-[10px] font-bold">
-                      {i + 1}
-                    </span>
-                    <span className="capitalize text-slate-200">{p.id}</span>
-                  </span>
-                  <span className={`chip ${p.configured ? 'bg-good/20 text-good' : 'bg-white/5 text-slate-500'}`}>
-                    {p.configured ? 'key present' : 'no key'}
-                  </span>
-                </li>
-              ))}
-              <li className="flex items-center justify-between rounded-xl border border-dashed border-white/10 px-3 py-2">
-                <span className="text-sm text-slate-300">offline builder</span>
-                <span className="chip bg-good/20 text-good">always available</span>
-              </li>
-            </ol>
-            <p className="mt-3 text-[11px] leading-relaxed text-slate-600">
-              Keys are read from environment variables on the server and are never sent to the browser.
-            </p>
-          </section>
-
-          <section className="panel p-5">
-            <h2 className="text-lg font-bold">Shipped defaults</h2>
-            <p className="mt-1 text-xs text-slate-500">What the engine falls back to if this table is empty.</p>
-            <dl className="mt-3 space-y-1.5 text-xs">
-              {defaults &&
-                ['xpPerStep', 'xpPerLevel', 'hintPenaltyXp', 'masteryUnlockThreshold', 'adaptationSensitivity'].map(
-                  (k) => (
-                    <div key={k} className="flex justify-between gap-3">
-                      <dt className="text-slate-500">{k}</dt>
-                      <dd className="tabular-nums text-slate-300">{JSON.stringify(defaults[k])}</dd>
-                    </div>
-                  ),
-                )}
-            </dl>
-          </section>
-        </aside>
       </div>
     </div>
   );

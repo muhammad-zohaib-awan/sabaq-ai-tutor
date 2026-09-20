@@ -7,6 +7,11 @@ export const metadata: Metadata = {
   title: 'Sabaq · AI Learning Experience Engine',
   description:
     'Turns any document or topic into an adaptive, voice-enabled learning mission, and infers mastery from what the learner does instead of testing them.',
+  icons: {
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+    ],
+  },
 };
 
 export const viewport: Viewport = {

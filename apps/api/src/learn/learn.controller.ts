@@ -203,4 +203,14 @@ export class LearnController {
     });
     return { ok: true };
   }
+
+  @Post(':journeyId/diagram-mermaid')
+  async getMermaidDiagram(@Param('journeyId') id: string) {
+    return this.learn.generateMermaidDiagram(id);
+  }
+
+  @Post(':journeyId/diagram-svg')
+  async getSvgDiagram(@Param('journeyId') id: string) {
+    return this.learn.generateSvgDiagram(id);
+  }
 }

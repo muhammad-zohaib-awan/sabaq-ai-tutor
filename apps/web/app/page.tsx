@@ -6,14 +6,13 @@ import { pick, t } from '@/lib/i18n';
 import { useApp } from '@/lib/state';
 import { sfxCorrect, sfxTap, sfxWrong } from '@/lib/sound';
 import { speak, stopSpeaking } from '@/lib/speech';
-import { VitalsPanel } from '@/components/VitalsPanel';
-import { HeartSim } from '@/components/HeartSim';
+
 import { BoardSim } from '@/components/BoardSim';
 import { InquireStep, ExplainStep } from '@/components/Steps';
 import { DecideWidget, OrderWidget, TraceWidget } from '@/components/Mechanics';
 import { AnalogyCard } from '@/components/AnalogyCard';
 import { TopicLauncher } from '@/components/TopicLauncher';
-import { AdaptationCard, LevelCard, MasteryPanel } from '@/components/SidePanels';
+import { AdaptationCard, LevelCard, MasteryPanel, LiveTestPanel } from '@/components/SidePanels';
 
 export default function LearnPage() {
   const {
@@ -28,6 +27,8 @@ export default function LearnPage() {
     celebrateXp,
     pushBadges,
   } = useApp();
+  
+  const isAdmin = user?.role === 'admin';
 
   const [stepIndex, setStepIndex] = useState(0);
   const [simStates, setSimStates] = useState<Record<string, number>>({});
@@ -149,6 +150,10 @@ export default function LearnPage() {
         ]);
       }
       await refreshState(journey.id);
+      if (res.missionComplete) {
+        toast('success', '🎉 Mission complete! Returning to launcher…');
+        setTimeout(() => setJourney(null), 3500);
+      }
       return res;
     } catch (e: any) {
       toast('error', e?.message ?? 'Could not save that step.');
@@ -376,8 +381,7 @@ export default function LearnPage() {
           {/* analogy + optional free visual aids */}
           {stepIndex === 0 && <AnalogyCard journey={journey} lang={lang} />}
 
-          {/* context panel */}
-          {stepIndex === 0 && <VitalsPanel panel={journey.contextPanel} lang={lang} />}
+          {/* context panel removed as per user request to not hardcode medical features */}
 
           {/* step body */}
           <section className="panel p-5">
@@ -400,23 +404,7 @@ export default function LearnPage() {
 
                 <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto]">
                   <div>
-                    {mechanic === 'sort' && step.sim && step.sim.visual === 'heart' && (
-                      <HeartSim
-                        elements={step.sim.elements}
-                        states={simStates}
-                        onToggle={(id) => {
-                          sfxTap();
-                          setSimStates((st) => ({ ...st, [id]: st[id] === 1 ? 0 : 1 }));
-                          setSimResult(null);
-                          setFlow('idle');
-                        }}
-                        legend={step.sim.legend}
-                        flow={flow}
-                        disabled={Boolean(simResult?.passed)}
-                      />
-                    )}
-
-                    {mechanic === 'sort' && step.sim && step.sim.visual !== 'heart' && (
+                    {mechanic === 'sort' && step.sim && (
                       <BoardSim
                         elements={step.sim.elements}
                         states={simStates}
@@ -487,6 +475,25 @@ export default function LearnPage() {
                         <span className="text-xs text-slate-400">−{cfg?.hintPenaltyXp ?? 5} XP</span>
                       </button>
                     )}
+
+                    <button 
+                      className="btn-ghost text-xs text-accent"
+                      onClick={() => {
+                        if (mechanic === 'sort' && step.sim) {
+                          setSimStates(Object.fromEntries(step.sim.elements.map((e: any) => [e.id, e.correct])));
+                        } else if (mechanic === 'order' && step.order) {
+                          setOrderValue(step.order.correctOrder || []);
+                        } else if (mechanic === 'decide' && step.decide) {
+                          const best = step.decide.options?.find((o: any) => o.quality === 'best');
+                          if (best) setDecideChoice(best.id);
+                        } else if (mechanic === 'trace' && step.trace) {
+                          setTraceChoice(step.trace.correctNodeId);
+                        }
+                      }}
+                      disabled={Boolean(simResult?.passed)}
+                    >
+                      Show Answer
+                    </button>
 
                     <button className="btn-ghost text-xs" onClick={markSelfCorrected}>
                       {t('iWasWrong', lang)}
@@ -577,17 +584,21 @@ export default function LearnPage() {
           </div>
         </div>
 
-        {/* right rail */}
         <aside className="space-y-5">
-          <MasteryPanel mastery={mastery} lang={lang} />
-          <AdaptationCard adaptation={adaptation} lang={lang} />
-          <LevelCard
-            progress={progress}
-            badges={cfg?.badges ?? []}
-            threshold={cfg?.masteryUnlockThreshold ?? 0.7}
-            mastery={mastery}
-            lang={lang}
-          />
+          {isAdmin && (
+            <>
+              <LiveTestPanel onBuildClick={() => window.dispatchEvent(new Event('openLiveTest'))} />
+              <MasteryPanel mastery={mastery} lang={lang} />
+              <AdaptationCard adaptation={adaptation} lang={lang} />
+              <LevelCard
+                progress={progress}
+                badges={cfg?.badges ?? []}
+                threshold={cfg?.masteryUnlockThreshold ?? 0.7}
+                mastery={mastery}
+                lang={lang}
+              />
+            </>
+          )}
         </aside>
       </div>
     </div>
