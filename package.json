@@ -1,0 +1,29 @@
+{
+  "name": "sabaq",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Sabaq - AI Learning Experience Engine (UBL Digital HR & AI Manager assignment)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:engine": "npm run build --workspace @sabaq/engine",
+    "build:api": "npm run build:engine && npm run build --workspace @sabaq/api",
+    "build:web": "npm run build:engine && npm run build --workspace @sabaq/web",
+    "build": "npm run build:engine && npm run build --workspace @sabaq/api && npm run build --workspace @sabaq/web",
+    "dev:api": "npm run build:engine && npm run dev --workspace @sabaq/api",
+    "dev:web": "npm run build:engine && npm run dev --workspace @sabaq/web",
+    "dev": "npm run build:engine && concurrently -n api,web -c cyan,magenta \"npm run dev --workspace @sabaq/api\" \"npm run dev --workspace @sabaq/web\"",
+    "start:api": "npm run start:prod --workspace @sabaq/api",
+    "start:web": "npm run start --workspace @sabaq/web",
+    "typecheck": "npm run build:engine && tsc -p apps/api/tsconfig.json --noEmit && tsc -p apps/web/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.6.3"
+  }
+}
