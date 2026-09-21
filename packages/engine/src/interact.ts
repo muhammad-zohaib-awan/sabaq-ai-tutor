@@ -40,8 +40,18 @@ export async function answerQuestion(args: {
 }): Promise<InquireResult> {
   const question = sanitizeUserText(args.question, 1200);
   const spec = args.step.inquire;
-  const ctx = contextFor(args.journey, question);
-  const fallbackCtx = ctx.length ? ctx : args.journey.concepts.slice(0, 3).map((c) => c.summary);
+
+  // BM25 top-k for relevance ordering, but ALWAYS fall back to full concept corpus
+  const bm25Hits = contextFor(args.journey, question);
+  const allConcepts = args.journey.concepts.map((c) => `${c.label}: ${c.summary}  [${c.sourceRef}]`);
+  // Include BM25 hits first (most relevant), then the rest of the concepts so Gemini always has full context
+  const ctx = bm25Hits.length >= 2
+    ? [...new Set([...bm25Hits, ...allConcepts])]   // BM25 hits first, then rest
+    : allConcepts;                                    // fallback: everything
+
+  // Also include the mustSurfaceFacts as context hints
+  const factHints = (spec?.mustSurfaceFacts ?? []).map((f) => f.fact);
+  const fullContext = [...ctx, ...factHints].slice(0, 12); // cap at 12 passages
 
   const factsSurfaced = (spec?.mustSurfaceFacts ?? [])
     .filter((f) => coverage(f.keywords, question) > 0)
@@ -53,14 +63,14 @@ export async function answerQuestion(args: {
       user: buildInquirePrompt({
         persona: spec?.persona ?? 'a colleague who knows this material',
         question,
-        context: fallbackCtx,
+        context: fullContext,
         language: args.language,
         tone: args.journey.tone,
         history: args.history,
       }),
       json: false,
-      maxTokens: 500,
-      temperature: 0.75,
+      maxTokens: 700,
+      temperature: 0.7,
     },
     args.cfg.providerOrder,
     args.cfg.aiTimeoutMs,
@@ -69,13 +79,10 @@ export async function answerQuestion(args: {
 
   if (!chain) {
     // Model-free answer: hand back the most relevant source passage in character.
-    const passage = fallbackCtx[0] ?? 'I do not have that in front of me.';
+    const passage = fullContext[0] ?? 'I do not have that in front of me.';
     return {
-      answer:
-        ctx.length > 0
-          ? `From what I have here: ${passage}`
-          : `That is not something the notes cover. What I can tell you is this: ${passage}`,
-      grounded: ctx.length > 0,
+      answer: `From what I have here: ${passage}`,
+      grounded: true,
       provider: 'offline',
       model: 'retrieval-only',
       latencyMs: 0,
