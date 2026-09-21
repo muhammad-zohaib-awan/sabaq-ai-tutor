@@ -150,6 +150,15 @@ export default function LearnPage() {
         ]);
       }
       await refreshState(journey.id);
+      if (res.xpAwarded > 0 && !res.leveledUp && !res.newBadges?.length) {
+        // Show a quick "step complete" badge for any XP-awarding step
+        pushBadges([{
+          id: `step_${step.id}`,
+          label: 'Step Complete! ✓',
+          description: `+${res.xpAwarded} XP earned. Keep going — you're building mastery.`,
+          icon: 'spark',
+        }]);
+      }
       if (res.missionComplete) {
         toast('success', '🎉 Mission complete! Returning to launcher…');
         setTimeout(() => setJourney(null), 3500);

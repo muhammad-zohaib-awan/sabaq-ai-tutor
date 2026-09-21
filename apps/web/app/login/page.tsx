@@ -10,11 +10,11 @@ export default function LoginPage() {
   const { setUser } = useApp();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState('');
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  async function go(fn: () => Promise<any>, tag: string) {
-    setBusy(tag);
+  async function go(fn: () => Promise<any>) {
+    setBusy(true);
     setError('');
     try {
       const res = await fn();
@@ -24,11 +24,11 @@ export default function LoginPage() {
     } catch (e: any) {
       setError(
         e?.message?.includes('fetch')
-          ? 'Cannot reach the API — try again in about 30 seconds.'
-          : (e?.message ?? 'Sign in failed.'),
+          ? 'Cannot reach the API — make sure the server is running.'
+          : (e?.message ?? 'Sign in failed. Check your credentials.'),
       );
     } finally {
-      setBusy('');
+      setBusy(false);
     }
   }
 
@@ -46,36 +46,13 @@ export default function LoginPage() {
           <p className="mt-1 text-sm text-slate-400">AI Learning Experience Engine</p>
         </div>
 
-        <div className="panel p-6">
-          {/* BUG 13: One-click demo sign-in — clean, no marketing copy */}
-          <div className="grid gap-3 sm:grid-cols-2">
-            <button
-              className="btn-primary"
-              disabled={Boolean(busy)}
-              onClick={() => go(() => api.demoLogin('learner'), 'learner')}
-            >
-              {busy === 'learner' ? 'Signing in…' : 'Enter as Learner'}
-            </button>
-            <button
-              className="btn-ghost"
-              disabled={Boolean(busy)}
-              onClick={() => go(() => api.demoLogin('admin'), 'admin')}
-            >
-              {busy === 'admin' ? 'Signing in…' : 'Enter as Admin'}
-            </button>
-          </div>
-
-          <div className="my-6 flex items-center gap-3 text-xs text-slate-600">
-            <span className="h-px flex-1 bg-white/10" />
-            or sign in with a password
-            <span className="h-px flex-1 bg-white/10" />
-          </div>
-
+        <div className="panel p-6 space-y-5">
+          {/* Primary: email + password login */}
           <form
             className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault();
-              void go(() => api.login(email, password), 'form');
+              void go(() => api.login(email, password));
             }}
           >
             <div>
@@ -87,7 +64,8 @@ export default function LoginPage() {
                 className="field"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@sabaq.app"
+                placeholder="your@email.com"
+                disabled={busy}
               />
             </div>
             <div>
@@ -100,15 +78,44 @@ export default function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
+                disabled={busy}
               />
             </div>
-            <button className="btn-primary w-full" disabled={busy === 'form' || !email || !password}>
-              {busy === 'form' ? 'Signing in…' : 'Sign in'}
+            <button
+              type="submit"
+              className="btn-primary w-full"
+              disabled={busy || !email || !password}
+            >
+              {busy ? 'Signing in…' : 'Sign in'}
             </button>
           </form>
 
+          {/* Demo quick-access — only shown if DEMO_LOGIN is enabled on the backend */}
+          <div className="border-t border-white/10 pt-4">
+            <p className="mb-3 text-center text-xs text-slate-500">Demo access (no password required)</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                className="btn-ghost text-sm"
+                disabled={busy}
+                onClick={() => go(() => api.demoLogin('learner'))}
+              >
+                👤 Demo Learner
+              </button>
+              <button
+                className="btn-ghost text-sm"
+                disabled={busy}
+                onClick={() => go(() => api.demoLogin('admin'))}
+              >
+                🔧 Demo Admin
+              </button>
+            </div>
+            <p className="mt-2 text-center text-[11px] text-slate-600">
+              Default: admin@sabaq.app / Admin@12345 · learner@sabaq.app / Learner@12345
+            </p>
+          </div>
+
           {error && (
-            <p className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">
+            <p className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">
               {error}
             </p>
           )}

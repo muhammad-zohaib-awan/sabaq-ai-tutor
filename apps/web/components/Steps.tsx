@@ -269,12 +269,24 @@ export function ExplainStep({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [speaking, setSpeaking] = useState(false);
+  const [usedTiles, setUsedTiles] = useState<string[]>([]);
+  const [guideOpen, setGuideOpen] = useState(true);
   const startedAt = useRef(Date.now());
 
   const words = answer.trim().split(/\s+/).filter(Boolean).length;
 
+  // Phrase tiles — AI-supplied or auto-generated from rubric
+  const tiles: string[] = step.explain?.phraseTiles ?? 
+    (step.explain?.rubric ?? []).map((r: any) => r.label) ?? [];
+
+  function addTile(tile: string) {
+    if (usedTiles.includes(tile)) return;
+    setUsedTiles((prev) => [...prev, tile]);
+    setAnswer((prev) => prev ? `${prev.trim()} ${tile}` : tile);
+  }
+
   async function submit() {
-    if (words < 8) return toast('error', 'Give it a few more words — three or four sentences works best.');
+    if (words < 5) return toast('error', 'Add a few more words — even a short sentence or two is enough.');
     setBusy(true);
     try {
       const res = await api.explain(journey.id, {
@@ -294,48 +306,101 @@ export function ExplainStep({
 
   return (
     <div className="space-y-4">
+      {/* Walkthrough guide */}
+      <div className="rounded-2xl border border-accent/20 bg-accent/5 px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 text-lg">📝</span>
+            <div>
+              <p className="text-sm font-semibold text-accent-soft">What to do here</p>
+              {guideOpen && (
+                <p className="mt-0.5 text-xs leading-relaxed text-slate-300">
+                  Explain the topic <strong className="text-slate-100">in your own words</strong> — like you're teaching a friend.
+                  Click the <strong className="text-slate-100">phrase tiles</strong> below to build your answer, or just type/speak freely.
+                  No perfect answer needed — show that you understood the idea.
+                </p>
+              )}
+            </div>
+          </div>
+          <button onClick={() => setGuideOpen(v => !v)} className="shrink-0 text-xs text-slate-500 hover:text-slate-300">
+            {guideOpen ? 'Hide' : 'Show guide'}
+          </button>
+        </div>
+      </div>
+
+      {/* The prompt */}
       <div className="rounded-2xl border border-white/5 bg-ink-900/50 p-4">
         <p className={`text-sm leading-relaxed text-slate-200 ${lang === 'ur' ? 'urdu' : ''}`}>
           {step.explain?.prompt}
         </p>
       </div>
 
-      <div>
-        <textarea
-          value={answer}
-          onChange={(e) => setAnswer(e.target.value)}
-          rows={6}
-          disabled={busy || Boolean(result)}
-          dir={lang === 'ur' ? 'rtl' : 'ltr'}
-          className={`field resize-y ${lang === 'ur' ? 'urdu' : ''}`}
-          placeholder={t('explainPlaceholder', lang)}
-        />
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-slate-500">{words} words</span>
-          <div className="flex gap-2">
-            <VoiceButton lang={lang} onText={setAnswer} disabled={busy || Boolean(result)} />
-            <button className="btn-primary" onClick={submit} disabled={busy || Boolean(result) || words < 8}>
-              {busy ? 'Assessing…' : t('submit', lang)}
-            </button>
+      {/* Phrase tiles — click to add to answer */}
+      {tiles.length > 0 && !result && (
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            💬 Click a phrase to add it to your answer
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {tiles.map((tile: string) => (
+              <button
+                key={tile}
+                onClick={() => addTile(tile)}
+                disabled={usedTiles.includes(tile) || Boolean(result)}
+                className={`chip border text-sm transition ${
+                  usedTiles.includes(tile)
+                    ? 'border-good/40 bg-good/10 text-good line-through'
+                    : 'border-white/10 bg-white/5 text-slate-300 hover:border-accent/40 hover:bg-accent/5'
+                }`}
+              >
+                {tile}
+              </button>
+            ))}
           </div>
         </div>
-      </div>
+      )}
 
+      {/* Text area */}
+      {!result && (
+        <div>
+          <textarea
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            rows={4}
+            disabled={busy}
+            dir={lang === 'ur' ? 'rtl' : 'ltr'}
+            className={`field resize-y ${lang === 'ur' ? 'urdu' : ''}`}
+            placeholder="Explain it in your own words… (or use the phrase tiles above to get started)"
+          />
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-slate-500">{words} words{words < 5 && words > 0 ? ' — add a bit more' : ''}</span>
+            <div className="flex gap-2">
+              <VoiceButton lang={lang} onText={(t) => setAnswer((prev) => prev ? `${prev} ${t}` : t)} disabled={busy} />
+              <button
+                className="btn-primary"
+                onClick={submit}
+                disabled={busy || words < 5}
+              >
+                {busy ? 'Assessing…' : t('submit', lang)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Result */}
       {result && (
         <div className="animate-riseFade space-y-3 rounded-2xl border border-white/10 bg-ink-700/60 p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-xs uppercase tracking-wide text-slate-400">Understanding shown</p>
-              <p className="text-3xl font-extrabold tabular-nums text-accent-soft">
+              <p className={`text-3xl font-extrabold tabular-nums ${result.overall >= 0.7 ? 'text-good' : result.overall >= 0.4 ? 'text-amber-300' : 'text-red-400'}`}>
                 {Math.round(result.overall * 100)}%
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <span className="chip bg-white/5 text-slate-300">
-                sounded {result.confidenceLanguage}
-              </span>
-              <span className="chip bg-white/5 text-slate-400">via {result.provider}</span>
-            </div>
+            <span className={`chip ${result.overall >= 0.7 ? 'bg-good/20 text-good' : result.overall >= 0.4 ? 'bg-amber-400/15 text-amber-200' : 'bg-red-400/15 text-red-200'}`}>
+              {result.overall >= 0.7 ? '✓ Great explanation!' : result.overall >= 0.4 ? 'Getting there' : 'Try once more'}
+            </span>
           </div>
 
           <p className={`text-sm leading-relaxed text-slate-200 ${lang === 'ur' ? 'urdu' : ''}`}>
@@ -344,12 +409,12 @@ export function ExplainStep({
 
           {result.strength && (
             <p className="text-sm text-emerald-300">
-              <span className="font-semibold">Strongest part:</span> {result.strength}
+              <span className="font-semibold">✓ Strongest part: </span>{result.strength}
             </p>
           )}
           {result.misconception && (
             <p className="text-sm text-amber-300">
-              <span className="font-semibold">Worth fixing:</span> {result.misconception}
+              <span className="font-semibold">⚠ Worth fixing: </span>{result.misconception}
             </p>
           )}
 
@@ -360,13 +425,13 @@ export function ExplainStep({
                 <li key={r.id} className="rounded-xl bg-ink-900/60 p-3">
                   <div className="flex items-baseline justify-between gap-2">
                     <span className="text-xs text-slate-300">{r.label}</span>
-                    <span className="text-xs font-semibold tabular-nums text-slate-400">
+                    <span className={`text-xs font-semibold tabular-nums ${s >= 0.7 ? 'text-good' : s >= 0.4 ? 'text-amber-300' : 'text-red-400'}`}>
                       {Math.round(s * 100)}%
                     </span>
                   </div>
                   <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-white/10">
                     <div
-                      className={`h-full rounded-full ${s >= 0.7 ? 'bg-good' : s >= 0.4 ? 'bg-warn' : 'bg-bad'}`}
+                      className={`h-full rounded-full transition-all duration-700 ${s >= 0.7 ? 'bg-good' : s >= 0.4 ? 'bg-warn' : 'bg-bad'}`}
                       style={{ width: `${Math.round(s * 100)}%` }}
                     />
                   </div>
@@ -379,27 +444,26 @@ export function ExplainStep({
             <button
               className="btn-ghost"
               onClick={() => {
-                if (speaking) {
-                  stopSpeaking();
-                  setSpeaking(false);
-                  return;
-                }
+                if (speaking) { stopSpeaking(); setSpeaking(false); return; }
                 setSpeaking(true);
                 void api.event({ type: 'voice_used', journeyId: journey.id, payload: { mode: 'output' } });
                 speak(step.explain?.modelAnswer ?? '', lang, () => setSpeaking(false));
               }}
             >
-              {speaking ? t('stop', lang) : 'Hear a strong answer'}
+              {speaking ? t('stop', lang) : '🔊 Hear a strong answer'}
             </button>
-            <button
-              className="btn-ghost"
-              onClick={() => {
-                setResult(null);
-                startedAt.current = Date.now();
-              }}
-            >
-              Try again in your own words
-            </button>
+            {result.overall < 0.7 && (
+              <button
+                className="btn-primary"
+                onClick={() => {
+                  setResult(null);
+                  setUsedTiles([]);
+                  startedAt.current = Date.now();
+                }}
+              >
+                Try again →
+              </button>
+            )}
           </div>
         </div>
       )}

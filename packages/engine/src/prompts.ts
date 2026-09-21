@@ -253,6 +253,7 @@ Return JSON exactly in this shape:
       "narrative": {"en":"2-3 sentences asking them to explain it back to a specific audience","ur":"","mix":""},
       "explain": {
         "prompt": "the exact ask, e.g. 'Explain to a first-year student why the murmur happens in systole'",
+        "phraseTiles": ["5 to 8 short 2-5 word phrases from the source that a learner can click to build their answer, e.g. 'reduces blood pressure', 'filters waste', 'opens the valve'"],
         "rubric": [{"id":"r1","label":"names the phase correctly","keywords":["systole","squeeze"],"weight":0.3}],
         "modelAnswer": "a strong 3-4 sentence answer, used only for grading and for the reveal"
       }
