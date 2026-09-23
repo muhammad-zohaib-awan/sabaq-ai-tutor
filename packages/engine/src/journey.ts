@@ -11,6 +11,7 @@ import { buildJourneyPrompt, JOURNEY_SYSTEM, type PriorSignals } from './prompts
 import { completeWithFallback, providerStatus, type ChainAttempt } from './providers';
 import { buildOfflineJourney } from './offline';
 import { checkGrounding } from './grounding';
+import { translateJourney, urduScriptRatio } from './translate';
 import { extractJson, now, sanitizeUserText, uid, clamp } from './util';
 
 export interface BuildResult {
@@ -270,6 +271,7 @@ function normalise(
             id: String(f?.id ?? `f${idx + 1}`),
             fact: String(f?.fact ?? '').slice(0, 300),
             keywords: (Array.isArray(f?.keywords) ? f.keywords : []).slice(0, 8).map((k: any) => String(k)),
+            hint: String(f?.hint ?? '').slice(0, 200) || undefined,
           }))
           .filter((f: any) => f.fact),
       };
@@ -288,10 +290,15 @@ function normalise(
       const total = rubric.reduce((a: number, b: any) => a + b.weight, 0);
       if (total > 0) rubric.forEach((x: any) => (x.weight = Number((x.weight / total).toFixed(3))));
 
+      const tiles = (Array.isArray(r.explain?.phraseTiles) ? r.explain.phraseTiles : [])
+        .map((t: any) => String(t ?? '').trim().slice(0, 60))
+        .filter(Boolean)
+        .slice(0, 8);
       step.explain = {
         prompt: String(r.explain?.prompt ?? base.explain!.prompt).slice(0, 300),
         rubric: rubric.length ? rubric : base.explain!.rubric,
         modelAnswer: String(r.explain?.modelAnswer ?? base.explain!.modelAnswer).slice(0, 1200),
+        phraseTiles: tiles.length ? [...new Set<string>(tiles)] : base.explain!.phraseTiles,
       };
     }
 
@@ -309,11 +316,27 @@ function normalise(
     .filter((m: any) => m.label && m.value);
 
   const validRef = src.concepts.find((c) => c.sourceRef === raw?.sourceRef)?.sourceRef;
+  const str = (v: any, max: number) => (typeof v === 'string' ? v : String(v?.en ?? v ?? '')).trim().slice(0, max);
+  const strList = (v: any, n: number, max: number) =>
+    (Array.isArray(v) ? v : []).map((x: any) => str(x, max)).filter(Boolean).slice(0, n);
+  const lesson = {
+    whatItIs: str(raw?.lesson?.whatItIs, 400) || skeleton.lesson!.whatItIs,
+    keyPoints: strList(raw?.lesson?.keyPoints, 6, 300),
+    example: str(raw?.lesson?.example, 700),
+    whyItMatters: str(raw?.lesson?.whyItMatters, 300),
+  };
+  if (!lesson.keyPoints.length) lesson.keyPoints = skeleton.lesson!.keyPoints;
+  const knowledge = strList(raw?.knowledge, 14, 300);
 
   return {
     id: uid('j'),
     createdAt: now(),
     mode: raw?.mode === 'explain' ? 'explain' : 'scenario',
+    primer: loc(raw?.primer, skeleton.primer.en),
+    lesson,
+    knowledge: knowledge.length ? knowledge : skeleton.knowledge,
+    sourceKind: src.text.trim().length < 200 ? 'topic' : 'document',
+    constraintNote: input.constraintNote?.trim().slice(0, 160) || undefined,
     analogy: loc(raw?.analogy, skeleton.analogy.en),
     media: {
       imagePrompt: String(raw?.media?.imagePrompt ?? skeleton.media.imagePrompt).slice(0, 300),
@@ -419,6 +442,17 @@ export async function buildJourney(
       journey.groundingNotes = g.notes;
     } else {
       journey.groundingNotes = ['Source too short for a meaningful grounding check.'];
+    }
+
+    // Models sometimes ignore the language rule. If Urdu was asked for and the
+    // text is not in Urdu script, fix it before the learner sees it.
+    if (input.language === 'ur') {
+      const sample = [journey.title.en, journey.primer.en, journey.lesson?.whatItIs ?? ''].join(' ');
+      if (urduScriptRatio(sample) < 0.5) {
+        log?.('[journey] Urdu requested but output was not in Urdu script — translating');
+        const t = await translateJourney(journey, 'ur', cfg, log);
+        return { journey: t.journey, attempts: chain.attempts };
+      }
     }
 
     return { journey, attempts: chain.attempts };

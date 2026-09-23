@@ -1,6 +1,7 @@
 import { Controller, Get, Module } from '@nestjs/common';
 import { providerStatus } from '@sabaq/engine';
-import { Public } from '../common/auth.guards';
+import { Public, Roles } from '../common/auth.guards';
+import { CacheService } from '../cache/cache.service';
 import { Metrics } from '../common/observability';
 import { StoreService } from '../store/store.service';
 import { EngineConfigService } from '../config/engine-config.service';
@@ -12,6 +13,7 @@ export class HealthController {
   constructor(
     private readonly store: StoreService,
     private readonly cfg: EngineConfigService,
+    private readonly cache: CacheService,
   ) {}
 
   /**
@@ -40,16 +42,18 @@ export class HealthController {
     return {
       ready: true,
       storage: this.store.healthy.mode,
+      cache: this.cache.mode,
       aiProvidersConfigured: providers.filter((p) => p.configured).map((p) => p.id),
       // An engine with no keys still serves learners via the offline builder.
       canServeLearners: true,
     };
   }
 
-  @Public()
+  /** Latency, error rates and provider stats are operational intel — admin only. */
+  @Roles('admin')
   @Get('health/metrics')
   metrics() {
-    return { ...Metrics.snapshot(), uptimeSec: Math.round((Date.now() - startedAt) / 1000) };
+    return { ...Metrics.snapshot(), cache: this.cache.stats(), uptimeSec: Math.round((Date.now() - startedAt) / 1000) };
   }
 }
 

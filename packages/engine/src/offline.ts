@@ -114,11 +114,26 @@ export function buildOfflineJourney(
     id: uid('j'),
     createdAt: now(),
     mode: looksDefinitional ? 'explain' : 'scenario',
-    analogy: L(
-      `Think of ${topic} the way you would think of a checklist you run before signing anything: each item either holds up or it does not.`,
-      `${topic} کو ایسے سمجھیں جیسے دستخط سے پہلے چلائی جانے والی ایک چیک لسٹ — ہر نکتہ یا تو درست ثابت ہوتا ہے یا نہیں۔`,
-      `${topic} ko aisay samjhein jaisay sign karne se pehle chalne wali ek checklist — har point ya to durust sabit hota hai ya nahi.`,
-    ),
+    // The primer is the one place the offline builder can be genuinely
+    // substantive: these are real sentences lifted from the learner's own
+    // source, not invention. Without a model this is what teaches.
+    primer: picks.length
+      ? (() => {
+          const body = picks.slice(0, 3).map((c) => c.summary).join(' ');
+          return L(body, body, body);
+        })()
+      : L('', '', ''),
+    lesson: {
+      whatItIs: picks[0]?.summary ?? `${topic} — built from the material you supplied.`,
+      keyPoints: picks.slice(1, 5).map((c) => c.summary),
+      example: '',
+      whyItMatters: '',
+    },
+    knowledge: picks.map((c) => c.summary),
+    sourceKind: src.text.trim().length < 200 ? 'topic' : 'document',
+    // Without a model there is no honest analogy to draw, and a generic one
+    // ("think of it like a checklist") teaches nothing. The UI hides an empty one.
+    analogy: L('', '', ''),
     media: {
       imagePrompt: `clean labelled educational diagram explaining ${topic}, flat vector illustration, white background, no watermark`,
       videoSearchQuery: `${topic} explained simply`,
@@ -141,11 +156,15 @@ export function buildOfflineJourney(
       title: `Case file · ${topic}`,
       subtitle: src.sourceName,
       metrics: [
-        { label: 'Concepts in play', value: String(Math.min(src.conceptCount, 99)), tone: 'neutral' },
+        ...(src.conceptCount > 0
+          ? [{ label: 'Concepts in play', value: String(Math.min(src.conceptCount, 99)), tone: 'neutral' as const }]
+          : []),
         ...(numbers[0] ? [{ label: 'Key figure', value: numbers[0], tone: 'warn' as const }] : []),
         { label: 'Difficulty', value: `${difficulty}/5`, tone: 'neutral' as const },
       ],
-      waveform: input.constraint === 'low_bandwidth' ? 'none' : 'wave',
+      // No synthetic trace. The offline builder has no signal to plot, and a
+      // drawn-on waveform is decoration pretending to be data.
+      waveform: 'none',
       caption: 'Working from the source you supplied. Running without a model right now.',
       audioCue: { label: 'Play cue', kind: 'tone' },
     },
@@ -221,6 +240,7 @@ export function buildOfflineJourney(
             .slice(0, 3)
             .map((c) => c.summary)
             .join(' '),
+          phraseTiles: picks.slice(0, 6).map((c) => c.label.slice(0, 40)),
         },
       },
     ],

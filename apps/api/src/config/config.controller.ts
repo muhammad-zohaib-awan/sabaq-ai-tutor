@@ -11,6 +11,7 @@ export class ConfigController {
     private readonly store: StoreService,
   ) {}
 
+  @Roles('admin')
   @Get()
   async get() {
     const config = await this.cfg.get();

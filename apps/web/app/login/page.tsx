@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, session } from '@/lib/api';
 import { useApp } from '@/lib/state';
 
@@ -12,6 +12,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [demoRoles, setDemoRoles] = useState<Array<'admin' | 'learner'>>([]);
+
+  // Only render demo buttons the server actually allows.
+  useEffect(() => {
+    api.authOptions().then((o) => setDemoRoles(o.demoRoles ?? [])).catch(() => setDemoRoles([]));
+  }, []);
 
   async function go(fn: () => Promise<any>) {
     setBusy(true);
@@ -90,29 +96,23 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Demo quick-access — only shown if DEMO_LOGIN is enabled on the backend */}
-          <div className="border-t border-white/10 pt-4">
-            <p className="mb-3 text-center text-xs text-slate-500">Demo access (no password required)</p>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <button
-                className="btn-ghost text-sm"
-                disabled={busy}
-                onClick={() => go(() => api.demoLogin('learner'))}
-              >
-                👤 Demo Learner
-              </button>
-              <button
-                className="btn-ghost text-sm"
-                disabled={busy}
-                onClick={() => go(() => api.demoLogin('admin'))}
-              >
-                🔧 Demo Admin
-              </button>
+          {demoRoles.length > 0 && (
+            <div className="border-t border-white/10 pt-4">
+              <p className="mb-3 text-center text-xs text-slate-500">Quick demo access</p>
+              <div className={`grid gap-2 ${demoRoles.length > 1 ? 'sm:grid-cols-2' : ''}`}>
+                {demoRoles.includes('learner') && (
+                  <button className="btn-ghost text-sm" disabled={busy} onClick={() => go(() => api.demoLogin('learner'))}>
+                    🎓 Demo Learner
+                  </button>
+                )}
+                {demoRoles.includes('admin') && (
+                  <button className="btn-ghost text-sm" disabled={busy} onClick={() => go(() => api.demoLogin('admin'))}>
+                    🛠️ Demo Admin
+                  </button>
+                )}
+              </div>
             </div>
-            <p className="mt-2 text-center text-[11px] text-slate-600">
-              Default: admin@sabaq.app / Admin@12345 · learner@sabaq.app / Learner@12345
-            </p>
-          </div>
+          )}
 
           {error && (
             <p className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">

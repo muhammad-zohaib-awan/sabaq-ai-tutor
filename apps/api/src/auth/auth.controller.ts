@@ -34,7 +34,7 @@ export class AuthController {
   @Post('login')
   async login(@Body() dto: LoginDto, @Ip() ip: string) {
     try {
-      const res = await this.auth.login(dto.email, dto.password);
+      const res = await this.auth.login(dto.email.trim().toLowerCase(), dto.password);
       await this.store.audit({ actor: dto.email, actorRole: res.user.role, action: 'auth.login', ip });
       return res;
     } catch (e) {
@@ -51,6 +51,13 @@ export class AuthController {
     const res = await this.auth.demoLogin(dto.role);
     await this.store.audit({ actor: res.user.email, actorRole: dto.role, action: 'auth.demo_login', ip });
     return res;
+  }
+
+  /** Tells the sign-in page which demo buttons to render. Never returns credentials. */
+  @Public()
+  @Get('options')
+  options() {
+    return { demoRoles: this.auth.demoRoles() };
   }
 
   @Get('me')

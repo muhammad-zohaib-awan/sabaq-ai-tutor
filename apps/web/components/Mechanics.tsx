@@ -235,7 +235,13 @@ export function TraceWidget({
   // After the learner commits, walk the particle along the chain so they see
   // where the quantity actually moves.
   useEffect(() => {
-    if (!result) return;
+    // The flow IS the answer, so it only plays once they have it (or revealed it).
+    if (!result || (!result.passed && !result.revealed)) {
+      setFlowIndex(-1);
+      setMeter(0);
+      return;
+    }
+    const riseAt = result.riseAt ?? result.correctNodeId;
     let i = 0;
     setFlowIndex(0);
     const timer = setInterval(() => {
@@ -245,12 +251,12 @@ export function TraceWidget({
         return;
       }
       setFlowIndex(i);
-      if (spec.nodes[i].id === spec.meterRisesAtNodeId) setMeter(100);
-      else if (i > spec.nodes.findIndex((n: any) => n.id === spec.meterRisesAtNodeId)) setMeter(100);
+      if (spec.nodes[i].id === riseAt) setMeter(100);
+      else if (i > spec.nodes.findIndex((n: any) => n.id === riseAt)) setMeter(100);
       else setMeter(Math.round((i / spec.nodes.length) * 35));
     }, 700);
     return () => clearInterval(timer);
-  }, [result, spec.nodes, spec.meterRisesAtNodeId]);
+  }, [result, spec.nodes]);
 
   return (
     <div className="space-y-5">
@@ -259,7 +265,7 @@ export function TraceWidget({
       <ol className="flex flex-wrap items-stretch gap-2">
         {spec.nodes.map((n: any, i: number) => {
           const isPicked = picked === n.id;
-          const isCorrect = result && spec.correctNodeId && n.id === result.correctNodeId;
+          const isCorrect = Boolean(result?.correctNodeId) && n.id === result.correctNodeId;
           const active = flowIndex === i;
           return (
             <li key={n.id} className="flex flex-1 basis-[160px] items-center gap-2">
@@ -270,7 +276,7 @@ export function TraceWidget({
                   isCorrect
                     ? 'border-good/50 bg-good/10'
                     : isPicked
-                      ? result
+                      ? result && !result.revealed
                         ? 'border-bad/40 bg-bad/10'
                         : 'border-accent/50 bg-accent/10'
                       : active
@@ -279,8 +285,8 @@ export function TraceWidget({
                 }`}
               >
                 <p className="text-sm font-semibold text-slate-100">{n.label}</p>
-                {(result || active) && n.detail && (
-                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{n.detail}</p>
+                {result?.details?.[n.id] && (result.passed || active) && (
+                  <p className="mt-1 text-[11px] leading-relaxed text-slate-400">{result.details[n.id]}</p>
                 )}
               </button>
               {i < spec.nodes.length - 1 && (

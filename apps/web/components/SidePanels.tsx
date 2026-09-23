@@ -125,13 +125,13 @@ export function AdaptationCard({ adaptation, lang }: { adaptation: any; lang: an
 }
 
 const BADGE_DOT: Record<string, string> = {
-  spark: '✦',
-  shield: '⛨',
-  question: '?',
-  loop: '↻',
-  voice: '♪',
-  trophy: '♛',
-  globe: '⊕',
+  spark: '🚀',
+  shield: '💪',
+  question: '🤔',
+  loop: '🔁',
+  voice: '🎤',
+  trophy: '🏆',
+  globe: '🌍',
 };
 
 export function LevelCard({
@@ -178,7 +178,7 @@ export function LevelCard({
                   : 'border-white/10 bg-white/5 text-slate-500'
               }`}
             >
-              <span aria-hidden>{BADGE_DOT[b.icon] ?? '✦'}</span>
+              <span aria-hidden>{b.emoji ?? BADGE_DOT[b.icon] ?? '✨'}</span>
               {b.label}
             </li>
           );
@@ -270,5 +270,90 @@ export function LiveTestPanel({ onBuildClick }: { onBuildClick: () => void }) {
         </button>
       </div>
     </section>
+  );
+}
+
+/**
+ * The learner's own rail.
+ *
+ * Deliberately NOT the mastery panel. A learner is shown what they have earned
+ * and what is left to do; what the engine has inferred about them is reporting,
+ * and reporting belongs to the admin. Telling someone mid-mission that they are
+ * "at 44% with 12% confidence" is a number they cannot act on and will only
+ * play to.
+ */
+export function LearnerProgress({
+  progress,
+  badges,
+  steps,
+  stepDone,
+  lang,
+}: {
+  progress: any;
+  badges: any[];
+  steps: any[];
+  stepDone: Record<string, boolean>;
+  lang: any;
+}) {
+  const earned = new Set(progress?.badges ?? []);
+  const pct = progress
+    ? Math.round((progress.xpIntoLevel / Math.max(1, progress.xpForLevel)) * 100)
+    : 0;
+  const done = (steps ?? []).filter((s) => stepDone?.[s.id]).length;
+  const total = (steps ?? []).length || 3;
+
+  return (
+    <>
+      <section className="panel p-5">
+        <header className="flex items-baseline justify-between gap-3">
+          <h2 className="text-lg font-bold">
+            {t('level', lang)} {progress?.level ?? 1}
+          </h2>
+          <span className="text-xs tabular-nums text-slate-400">
+            {progress?.xpIntoLevel ?? 0} / {progress?.xpForLevel ?? 100} XP
+          </span>
+        </header>
+
+        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/10">
+          <div
+            className="h-full rounded-full bg-accent transition-all duration-700"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+
+        <p className="mt-3 text-sm text-slate-300">
+          {done} of {total} steps done in this mission.
+        </p>
+        {progress?.streakDays ? (
+          <p className="mt-1 text-xs text-slate-500">{progress.streakDays}-day streak.</p>
+        ) : null}
+      </section>
+
+      <section className="panel p-5">
+        <h2 className="text-lg font-bold">Badges</h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Earned for how you work, not for turning up.
+        </p>
+        <ul className="mt-3 flex flex-wrap gap-2">
+          {badges.map((b) => {
+            const has = earned.has(b.id);
+            return (
+              <li
+                key={b.id}
+                title={b.description}
+                className={`chip border ${
+                  has
+                    ? 'border-accent/40 bg-accent/15 text-accent-soft'
+                    : 'border-white/10 bg-white/5 text-slate-500'
+                }`}
+              >
+                <span aria-hidden>{b.emoji ?? BADGE_DOT[b.icon] ?? '✨'}</span>
+                {b.label}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    </>
   );
 }

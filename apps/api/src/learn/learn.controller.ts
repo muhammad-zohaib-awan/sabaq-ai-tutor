@@ -11,6 +11,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import {
+  ArrayMaxSize,
   IsArray,
   IsIn,
   IsInt,
@@ -28,6 +29,8 @@ import { ContentService } from '../content/content.service';
 import { CurrentUser, type AuthUser } from '../common/auth.guards';
 
 const LANGS = ['en', 'ur', 'mix'];
+const CONSTRAINT_IDS = ['standard', 'low_bandwidth', 'voice_only', 'accessibility', 'offline_first'];
+const TONES = ['coaching', 'socratic', 'formal', 'playful', 'mentor'];
 
 class AskDto {
   @IsString() @MaxLength(64) stepId: string;
@@ -46,6 +49,7 @@ class ExplainDto {
 }
 
 class SimDto {
+  @IsOptional() @IsIn(LANGS) language?: string;
   @IsString() @MaxLength(64) stepId: string;
   @IsOptional() @IsObject() states?: Record<string, number>;
   @IsOptional() @IsArray() order?: string[];
@@ -66,8 +70,34 @@ class CompleteDto {
   @IsOptional() @IsString() @MaxLength(64) sessionId?: string;
 }
 
+class TranslateDto {
+  @IsIn(LANGS) language: Language;
+}
+
+class HintDto {
+  @IsOptional() @IsIn(LANGS) language?: string;
+  @IsString() @MaxLength(64) stepId: string;
+  @IsOptional() @IsObject() states?: Record<string, number>;
+  @IsOptional() @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) order?: string[];
+  @IsOptional() @IsString() @MaxLength(40) optionId?: string;
+  @IsOptional() @IsString() @MaxLength(40) nodeId?: string;
+}
+
+class StepRefDto {
+  @IsOptional() @IsIn(LANGS) language?: string;
+  @IsString() @MaxLength(64) stepId: string;
+  @IsOptional() @IsString() @MaxLength(300) note?: string;
+}
+
+/**
+ * Only UI-side signals may be posted by the browser. The old DTO accepted any
+ * type, so a learner could post `explain_submitted` with `score: 1` and the
+ * mastery engine would believe it.
+ */
+const CLIENT_EVENT_TYPES = ['voice_used', 'language_switched', 'step_started', 'confidence_stated', 'lesson_viewed'];
+
 class EventDto {
-  @IsString() @MaxLength(40) type: string;
+  @IsIn(CLIENT_EVENT_TYPES) type: string;
   @IsOptional() @IsString() @MaxLength(64) journeyId?: string;
   @IsOptional() @IsString() @MaxLength(64) stepId?: string;
   @IsOptional() @IsObject() payload?: Record<string, unknown>;
@@ -86,8 +116,8 @@ export class LearnController {
   }
 
   @Get('journey/:id')
-  journey(@Param('id') id: string) {
-    return this.learn.get(id);
+  journey(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.learn.get(id, user);
   }
 
   @Get('state')
@@ -112,7 +142,7 @@ export class LearnController {
     @Body() body: any,
     @CurrentUser() user: AuthUser,
   ) {
-    let text = typeof body.text === 'string' ? body.text : '';
+    let text = typeof body.text === 'string' ? body.text.slice(0, 200_000) : '';
     let sourceName = 'Pasted text';
 
     if (file) {
@@ -121,21 +151,29 @@ export class LearnController {
       sourceName = parsed.sourceName;
     }
 
-    const topic = typeof body.topic === 'string' ? body.topic.slice(0, 300) : '';
+    const clean = (v: unknown, max: number) =>
+      typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : '';
+
+    const topic = clean(body.topic, 300);
     // A topic with no document is honestly labelled as such, so the UI never
     // implies a citation to a source that does not exist.
     if (!text && topic) sourceName = 'Your topic';
+
+    const constraint = CONSTRAINT_IDS.includes(body.constraint) ? body.constraint : 'standard';
+    const constraintNote = clean(body.constraintNote, 160);
+    const difficulty = Number(body.difficulty);
 
     return this.learn.build(
       {
         text,
         topic,
         sourceName,
-        learnerType: String(body.learnerType ?? 'Nursing trainee').slice(0, 80),
+        learnerType: clean(body.learnerType, 80) || 'Curious learner',
         language: (LANGS.includes(body.language) ? body.language : 'en') as Language,
-        constraint: (String(body.constraint ?? 'standard') as OperatingConstraint),
-        tone: body.tone ? (String(body.tone) as Tone) : undefined,
-        difficulty: body.difficulty ? Number(body.difficulty) : undefined,
+        constraint: constraint as OperatingConstraint,
+        constraintNote: constraintNote || undefined,
+        tone: TONES.includes(body.tone) ? (body.tone as Tone) : undefined,
+        difficulty: Number.isFinite(difficulty) ? Math.min(5, Math.max(1, Math.round(difficulty))) : undefined,
       },
       user,
     );
@@ -154,6 +192,7 @@ export class LearnController {
       seconds: dto.seconds ?? 0,
       statedConfidence: dto.statedConfidence,
       sessionId: dto.sessionId,
+      language: dto.language,
     });
   }
 
@@ -169,22 +208,15 @@ export class LearnController {
     return this.learn.explain(user, journeyId, dto);
   }
 
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post(':journeyId/hint')
-  hint(
-    @Param('journeyId') journeyId: string,
-    @Body() body: { stepId: string; elementId: string },
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.learn.hint(user, journeyId, String(body.stepId ?? ''), String(body.elementId ?? ''));
+  hint(@Param('journeyId') journeyId: string, @Body() dto: HintDto, @CurrentUser() user: AuthUser) {
+    return this.learn.hint(user, journeyId, dto);
   }
 
   @Post(':journeyId/self-correct')
-  selfCorrect(
-    @Param('journeyId') journeyId: string,
-    @Body() body: { stepId: string; note?: string },
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.learn.selfCorrect(user, journeyId, String(body.stepId ?? ''), body.note ?? '');
+  selfCorrect(@Param('journeyId') journeyId: string, @Body() dto: StepRefDto, @CurrentUser() user: AuthUser) {
+    return this.learn.selfCorrect(user, journeyId, dto.stepId, dto.note ?? '');
   }
 
   @Post(':journeyId/complete')
@@ -204,13 +236,37 @@ export class LearnController {
     return { ok: true };
   }
 
-  @Post(':journeyId/diagram-mermaid')
-  async getMermaidDiagram(@Param('journeyId') id: string) {
-    return this.learn.generateMermaidDiagram(id);
+  /** Reveal the answer. Recorded as evidence, so mastery stays honest. */
+  @Post(':journeyId/reveal')
+  reveal(@Param('journeyId') journeyId: string, @Body() dto: StepRefDto, @CurrentUser() user: AuthUser) {
+    return this.learn.reveal(user, journeyId, dto.stepId, dto.language);
   }
 
+  // Diagram generation is a full model call each time, so it is throttled far
+  // harder than the cheap routes — otherwise one learner holding down a button
+  // burns the whole deployment's free-tier quota.
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post(':journeyId/diagram-mermaid')
+  async getMermaidDiagram(@Param('journeyId') id: string, @Query('force') force: string, @CurrentUser() user: AuthUser) {
+    return this.learn.generateMermaidDiagram(user, id, force === '1');
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post(':journeyId/diagram-svg')
-  async getSvgDiagram(@Param('journeyId') id: string) {
-    return this.learn.generateSvgDiagram(id);
+  async getSvgDiagram(
+    @Param('journeyId') id: string,
+    @Query('force') force: string,
+    @Query('lang') lang: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.learn.generateSvgDiagram(user, id, force === '1', lang);
+  }
+
+  /** Translate the mission into the language the learner just switched to. */
+  // Results are cached server-side, so repeats are cheap. Generous limit.
+  @Throttle({ default: { limit: 40, ttl: 60_000 } })
+  @Post(':journeyId/translate')
+  translate(@Param('journeyId') id: string, @Body() dto: TranslateDto, @CurrentUser() user: AuthUser) {
+    return this.learn.translate(user, id, dto.language);
   }
 }

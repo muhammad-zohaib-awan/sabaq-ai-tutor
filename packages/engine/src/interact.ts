@@ -2,13 +2,16 @@ import type { EngineConfig, Journey, JourneyStep, Language, Localized } from './
 import { buildExplainPrompt, buildInquirePrompt, EXPLAIN_SYSTEM, INQUIRE_SYSTEM } from './prompts';
 import { completeWithFallback } from './providers';
 import { scoreExplanationLocally } from './mastery';
-import { bm25, clamp, coverage, extractJson, sanitizeUserText } from './util';
+import { bm25, clamp, coverage, extractJson, keywords, sanitizeUserText } from './util';
+
 
 /* ------------------------------------------------------- step 2: inquire */
 
 export interface InquireResult {
   answer: string;
   grounded: boolean;
+  /** Where the answer came from — lets the UI be honest without scaring the learner. */
+  basis: 'source' | 'general' | 'offtopic';
   provider: string;
   model: string;
   latencyMs: number;
@@ -17,16 +20,51 @@ export interface InquireResult {
 }
 
 /**
- * The retrieval step for the role-play chat, scored with BM25 so a question
- * about a rare term ("regurgitation") finds the passage that actually covers it
- * instead of whichever passage repeats a common word most often.
+ * Everything the persona is allowed to draw on, most relevant first.
+ *
+ * The old version only used `journey.concepts` — which, for a one-line topic,
+ * is a single sentence (the topic itself). The persona therefore had nothing to
+ * answer from and refused almost every question ("I can't speak on that").
+ * Now it gets the lesson, the model-written knowledge base, the mission facts
+ * and any source passages, ranked by BM25 against the question.
  */
-function contextFor(journey: Journey, question: string, k = 3): string[] {
-  const corpus = journey.concepts.map((c) => `${c.label} ${c.summary}`);
-  return bm25(corpus, question, k).map((h) => {
-    const c = journey.concepts[h.index];
-    return `${c.summary}  [${c.sourceRef}]`;
-  });
+function knowledgeFor(journey: Journey, spec: JourneyStep['inquire'], question: string): string[] {
+  const pool: string[] = [];
+  const add = (s?: string) => {
+    const t = String(s ?? '').trim();
+    if (t && !pool.includes(t)) pool.push(t);
+  };
+  const l = journey.lesson;
+  add(l?.whatItIs);
+  (l?.keyPoints ?? []).forEach(add);
+  add(l?.example);
+  add(journey.primer?.en);
+  (journey.knowledge ?? []).forEach(add);
+  (spec?.mustSurfaceFacts ?? []).forEach((f) => add(f.fact));
+  for (const c of journey.concepts ?? []) add(`${c.label}: ${c.summary}  [${c.sourceRef}]`);
+
+  const ranked = bm25(pool, question, 8).map((h) => pool[h.index]);
+  return [...new Set([...ranked, ...pool])].slice(0, 18);
+}
+
+function situationFor(journey: Journey, step: JourneyStep): string {
+  const sim = journey.steps.find((s) => s.kind === 'simulate');
+  return [
+    sim?.narrative?.en,
+    sim?.decide?.situation,
+    step.narrative?.en,
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 1400);
+}
+
+/** Close an answer that ran out of tokens mid-sentence rather than show "…if". */
+function tidyEnding(s: string): string {
+  const t = s.trim();
+  if (!t || /[.!?۔؟)"'”]$/.test(t)) return t;
+  const cut = Math.max(t.lastIndexOf('. '), t.lastIndexOf('! '), t.lastIndexOf('? '), t.lastIndexOf('۔ '));
+  return cut > t.length * 0.4 ? t.slice(0, cut + 1) : `${t}.`;
 }
 
 export async function answerQuestion(args: {
@@ -40,22 +78,11 @@ export async function answerQuestion(args: {
 }): Promise<InquireResult> {
   const question = sanitizeUserText(args.question, 1200);
   const spec = args.step.inquire;
-
-  // BM25 top-k for relevance ordering, but ALWAYS fall back to full concept corpus
-  const bm25Hits = contextFor(args.journey, question);
-  const allConcepts = args.journey.concepts.map((c) => `${c.label}: ${c.summary}  [${c.sourceRef}]`);
-  // Include BM25 hits first (most relevant), then the rest of the concepts so Gemini always has full context
-  const ctx = bm25Hits.length >= 2
-    ? [...new Set([...bm25Hits, ...allConcepts])]   // BM25 hits first, then rest
-    : allConcepts;                                    // fallback: everything
-
-  // Also include the mustSurfaceFacts as context hints
-  const factHints = (spec?.mustSurfaceFacts ?? []).map((f) => f.fact);
-  const fullContext = [...ctx, ...factHints].slice(0, 12); // cap at 12 passages
-
-  const factsSurfaced = (spec?.mustSurfaceFacts ?? [])
-    .filter((f) => coverage(f.keywords, question) > 0)
-    .map((f) => f.id);
+  const context = knowledgeFor(args.journey, spec, question);
+  const history = (args.history ?? []).map((h) => ({
+    role: h.role === 'learner' ? ('learner' as const) : ('persona' as const),
+    text: sanitizeUserText(String(h.text ?? ''), 600),
+  }));
 
   const chain = await completeWithFallback(
     {
@@ -63,45 +90,89 @@ export async function answerQuestion(args: {
       user: buildInquirePrompt({
         persona: spec?.persona ?? 'a colleague who knows this material',
         question,
-        context: fullContext,
+        context,
         language: args.language,
         tone: args.journey.tone,
-        history: args.history,
+        history,
+        topic: args.journey.topic,
+        learnerType: args.journey.learnerType,
+        situation: situationFor(args.journey, args.step),
+        sourceKind: args.journey.sourceKind,
       }),
       json: false,
-      maxTokens: 700,
-      temperature: 0.7,
+      maxTokens: 1024,
+      temperature: 0.6,
     },
     args.cfg.providerOrder,
     args.cfg.aiTimeoutMs,
     args.log,
   );
 
+  // A fact counts as surfaced when it shows up in the exchange — the question
+  // OR the persona's answer — not only when the learner happens to type its keyword.
+  // Lenient on purpose: a fact counts once the exchange clearly covers it —
+  // one distinctive keyword for short keyword lists, or half the fact's own
+  // key terms. Also matches simple word forms (stoma / stomata, absorb / absorbs).
+  const stem = (w: string) => w.toLowerCase().replace(/(ies|es|s|ing|ed|ata|a)$/i, '').slice(0, 7);
+  const surfaced = (text: string) => {
+    const words = new Set(
+      text
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((w) => w.length > 2)
+        .map(stem),
+    );
+    const hit = (term: string) =>
+      term
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((w) => w.length > 2)
+        .some((w) => words.has(stem(w)));
+    return (spec?.mustSurfaceFacts ?? [])
+      .filter((f) => {
+        const kw = f.keywords?.length ? f.keywords : [];
+        const kwHits = kw.filter(hit).length;
+        if (kw.length && kwHits >= (kw.length >= 4 ? 2 : 1)) return true;
+        const factTerms = keywords(f.fact ?? '', 6);
+        return factTerms.length > 0 && factTerms.filter(hit).length / factTerms.length >= 0.5;
+      })
+      .map((f) => f.id);
+  };
+
   if (!chain) {
-    // Model-free answer: hand back the most relevant source passage in character.
-    const passage = fullContext[0] ?? 'I do not have that in front of me.';
+    const passage = context[0] ?? 'I do not have that in front of me.';
     return {
       answer: `From what I have here: ${passage}`,
       grounded: true,
+      basis: 'source',
       provider: 'offline',
       model: 'retrieval-only',
       latencyMs: 0,
-      factsSurfaced,
+      factsSurfaced: surfaced(`${question} ${passage}`),
       degraded: true,
     };
   }
 
   const raw = chain.text.trim();
-  const groundedLine = raw.match(/GROUNDED:\s*(yes|no)/i);
-  const answer = raw.replace(/GROUNDED:\s*(yes|no)\s*$/i, '').trim();
+  const basisMatch = raw.match(/BASIS:\s*(source|general|offtopic)/i) ?? raw.match(/GROUNDED:\s*(yes|no)/i);
+  const answer = tidyEnding(
+    raw
+      .replace(/\n?\s*BASIS:\s*\w+\s*$/i, '')
+      .replace(/\n?\s*GROUNDED:\s*\w+\s*$/i, '')
+      .trim(),
+  );
+  const tag = (basisMatch?.[1] ?? 'source').toLowerCase();
+  const basis: InquireResult['basis'] =
+    tag === 'offtopic' || tag === 'no' ? 'offtopic' : tag === 'general' ? 'general' : 'source';
 
   return {
     answer: answer || raw,
-    grounded: groundedLine ? /yes/i.test(groundedLine[1]) : ctx.length > 0,
+    grounded: basis !== 'offtopic',
+    basis,
     provider: chain.provider,
     model: chain.model,
     latencyMs: chain.latencyMs,
-    factsSurfaced,
+    factsSurfaced: basis === 'offtopic' ? surfaced(question) : surfaced(`${question} ${answer}`),
     degraded: false,
   };
 }
@@ -149,16 +220,16 @@ export async function gradeExplanation(args: {
     feedback: {
       en:
         local.overall >= 0.7
-          ? 'Solid explanation — you named the mechanism and the timing. Tighten it by saying what you would check next.'
-          : 'You are part of the way there. Go back to the timing of the sound and say explicitly which part is open and which is shut.',
+          ? 'Solid explanation — you covered the main idea. Tighten it with one concrete example from your own work.'
+          : 'You are part of the way there. Go back to the lesson key points and say, step by step, what happens and why.',
       ur:
         local.overall >= 0.7
-          ? 'اچھی وضاحت — آپ نے میکانزم اور وقت دونوں بتائے۔ اب یہ بھی بتائیں کہ اگلا قدم کیا ہوگا۔'
-          : 'آپ کچھ حد تک درست ہیں۔ آواز کے وقت پر دوبارہ غور کریں اور واضح کریں کہ کون سا حصہ کھلا اور کون سا بند ہے۔',
+          ? 'اچھی وضاحت — آپ نے بنیادی خیال بیان کر دیا۔ اب اپنے کام سے ایک مثال بھی دیں۔'
+          : 'آپ کچھ حد تک درست ہیں۔ سبق کے اہم نکات دوبارہ دیکھیں اور قدم بہ قدم بتائیں کہ کیا ہوتا ہے اور کیوں۔',
       mix:
         local.overall >= 0.7
-          ? 'Achi explanation — mechanism aur timing dono bataye. Ab ye bhi batayen ke agla step kya hoga.'
-          : 'Aap kuch had tak sahi hain. Awaaz ki timing par dobara sochein aur clearly batayen kaun sa hissa khula aur kaun sa band hai.',
+          ? 'Achi explanation — main idea cover ho gaya. Ab apne kaam se ek example bhi dein.'
+          : 'Aap kuch had tak sahi hain. Lesson ke key points dobara dekhein aur step by step batayen kya hota hai aur kyun.',
     },
     confidenceLanguage: localConfidence(answer),
     provider: 'offline',

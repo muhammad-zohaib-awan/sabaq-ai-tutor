@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { CacheService } from '../cache/cache.service';
 import { randomUUID } from 'crypto';
 import {
   InsufficientSourceError,
@@ -11,6 +12,14 @@ import {
   progressFromXp,
   sampleJourney,
   completeWithFallback,
+  publicJourney,
+  reissueJourney,
+  hintFor,
+  revealFor,
+  translateJourney,
+  outlineFromLesson,
+  outlineWithModel,
+  renderInfographic,
   type BuildJourneyInput,
   type Journey,
   type Language,
@@ -20,6 +29,7 @@ import { StoreService } from '../store/store.service';
 import { EngineConfigService } from '../config/engine-config.service';
 import { Metrics } from '../common/observability';
 import type { AuthUser } from '../common/auth.guards';
+import { sanitizeSvg } from './svg-sanitize';
 
 const id = (p: string) => `${p}_${randomUUID().slice(0, 12)}`;
 
@@ -30,20 +40,105 @@ export class LearnService {
   constructor(
     private readonly store: StoreService,
     private readonly cfg: EngineConfigService,
+    private readonly cache: CacheService,
   ) {}
+
+  /** Bump when the prompt or journey shape changes so stale cached missions are not served. */
+  private static readonly JOURNEY_SCHEMA = 'v3';
+  private readonly journeyTtl = Number(process.env.JOURNEY_CACHE_TTL_SEC ?? 7 * 86400);
+
+  /** Writes that the response does not depend on. Logged, never thrown. */
+  private later(p: Promise<unknown>, what: string) {
+    p.catch((e) => this.log.warn(`${what} failed: ${String(e?.message ?? e).slice(0, 160)}`));
+  }
+
+  /* ------------------------------------------------------ journey access */
+
+  /**
+   * Loads a journey the caller is allowed to use. Journeys are immutable once
+   * built, so they are cached — every sim / ask / hint call used to be a
+   * Postgres round trip for the same row.
+   *
+   * Ownership is enforced here: previously any signed-in user could read or
+   * play any other learner's journey (and its answers) by guessing the id.
+   */
+  private async load(journeyId: string, user: AuthUser): Promise<Journey> {
+    const id = String(journeyId ?? '').slice(0, 64);
+    if (id === 'sample_cardiac') return sampleJourney(await this.cfg.get());
+    const key = `j:${id}`;
+    let row = await this.cache.get<{ ownerId: string; data: Journey }>(key);
+    if (!row) {
+      const db = await this.store.findJourney(id);
+      if (db) {
+        row = { ownerId: db.ownerId, data: db.data as Journey };
+        await this.cache.set(key, row, 6 * 3600);
+      }
+    }
+    const allowed = row && (row.ownerId === user.sub || row.ownerId === 'system' || user.role === 'admin');
+    // Same message for "missing" and "not yours", so ids cannot be probed.
+    if (!row || !allowed) throw new NotFoundException('That mission no longer exists. Build a new one.');
+    return row.data;
+  }
+
+  /** The journey in the learner's current language, if it has been translated. */
+  private async loadFor(journeyId: string, user: AuthUser, lang?: string): Promise<Journey> {
+    const base = await this.load(journeyId, user);
+    if (!lang || lang === base.language || !['en', 'ur', 'mix'].includes(lang)) return base;
+    return (await this.cache.get<Journey>(`jt:${base.id}:${lang}`)) ?? base;
+  }
+
+  /**
+   * Translate the mission into another language on demand. Same ids and
+   * answers, new words. Cached, so each language is generated once.
+   */
+  async translate(user: AuthUser, journeyId: string, lang: Language) {
+    const base = await this.load(journeyId, user);
+    if (lang === base.language) return { journey: publicJourney(base), cached: true };
+    const key = `jt:${base.id}:${lang}`;
+    const hit = await this.cache.get<Journey>(key);
+    if (hit) return { journey: publicJourney(hit), cached: true };
+
+    const config = await this.cfg.get();
+    const started = Date.now();
+    const { value, cached } = await this.cache.wrap(
+      // Keyed on content too, so a re-issued cached mission reuses the translation.
+      'tr:' + CacheService.key(base.title.en, base.steps.map((st) => st.narrative.en), lang),
+      30 * 86400,
+      () => translateJourney(base, lang, config, (m) => this.log.log(m)),
+      { accept: (r) => r.complete },
+    );
+    // Re-attach this journey's own id (the content cache may hold a sibling's).
+    const translated: Journey = { ...value.journey, id: base.id };
+    // A partial translation is still shown, but only kept briefly so the
+    // missing parts are retried on the next toggle.
+    await this.cache.set(key, translated, value.complete ? 7 * 86400 : 600);
+    this.log.log(`[translate] ${base.id} -> ${lang} in ${Date.now() - started} ms${cached ? ' (cache)' : ''}`);
+    return { journey: publicJourney(translated), cached, complete: value.complete };
+  }
+
+  private stepOf(journey: Journey, stepId: string, fallbackIndex: number) {
+    const step = journey.steps.find((s) => s.id === stepId);
+    if (step) return step;
+    if (stepId) throw new BadRequestException('That step is not part of this mission.');
+    return journey.steps[fallbackIndex];
+  }
 
   /* ----------------------------------------------------------- journeys */
 
   async build(input: BuildJourneyInput, user: AuthUser) {
-    const config = await this.cfg.get();
     if (!input.text?.trim() && !input.topic?.trim()) {
       throw new BadRequestException('Give me a topic, some text, or a file to work from.');
     }
+    const started = Date.now();
+
+    // Independent reads, in parallel.
+    const [config, priorRows] = await Promise.all([
+      this.cfg.get(),
+      this.store.listEvents({ learnerId: user.sub }),
+    ]);
 
     // Close the adaptation loop: what the engine has already inferred about this
-    // learner is fed back into the generation prompt, so the next mission is
-    // genuinely harder or gentler rather than just labelled that way.
-    const priorRows = await this.store.listEvents({ learnerId: user.sub });
+    // learner is fed back into the generation prompt.
     const priorMastery = inferMastery(this.toEngineEvents(priorRows), config);
     const weakest = priorMastery.signals
       .filter((s) => s.evidence > 0)
@@ -54,51 +149,107 @@ export class LearnService {
       weakestSignal: weakest?.label,
     };
 
-    const started = Date.now();
+    // Same topic + same learner profile + same mastery band = same mission.
+    // Cached, a repeat build is instant instead of a 10-20 s model call.
+    const band = !prior.hasEvidence ? 'none' : prior.mastery >= 0.7 ? 'high' : prior.mastery <= 0.45 ? 'low' : 'mid';
+    const cacheKey =
+      'jb:' +
+      CacheService.key(
+        LearnService.JOURNEY_SCHEMA,
+        (input.topic ?? '').trim().toLowerCase(),
+        CacheService.key(input.text ?? ''),
+        input.sourceName ?? '',
+        input.learnerType.trim().toLowerCase(),
+        input.language,
+        input.constraint,
+        input.constraintNote ?? '',
+        input.difficulty ?? config.defaultDifficulty,
+        input.tone ?? config.defaultTone,
+        config.gamificationEnabled,
+        band,
+        band === 'none' ? '' : prior.weakestSignal ?? '',
+      );
+
     let built: { journey: Journey; attempts: any[] };
+    let cached = false;
     try {
-      built = await buildJourney(input, config, (m) => this.log.log(m), prior);
+      const res = await this.cache.wrap(
+        cacheKey,
+        this.journeyTtl,
+        () => buildJourney(input, config, (m) => this.log.log(m), prior),
+        // Never cache a degraded/offline build: next time the model may be back.
+        { accept: (v) => !v.journey.degraded },
+      );
+      built = res.value;
+      cached = res.cached;
     } catch (e) {
       if (e instanceof InsufficientSourceError) throw new BadRequestException(e.message);
       throw e;
     }
-    const { journey, attempts } = built;
+
+    const journey = cached ? reissueJourney(built.journey) : built.journey;
+    const attempts = cached ? [] : built.attempts;
     for (const a of attempts) Metrics.aiCall(a.provider, a.ok, a.latencyMs);
 
-    await this.store.saveJourney({
-      id: journey.id,
-      ownerId: user.sub,
-      title: journey.title.en.slice(0, 160),
-      sourceName: journey.sourceName,
-      topic: journey.topic.slice(0, 160),
-      provider: journey.provider,
-      model: journey.model,
-      latencyMs: journey.latencyMs,
-      grounded: journey.grounded,
-      degraded: journey.degraded,
-      data: journey,
-      createdAt: new Date(),
-    } as any);
-
-    await this.record(user, {
-      journeyId: journey.id,
-      type: 'journey_built',
-      payload: {
+    await Promise.all([
+      this.cache.set(`j:${journey.id}`, { ownerId: user.sub, data: journey }, 6 * 3600),
+      this.store.saveJourney({
+        id: journey.id,
+        ownerId: user.sub,
+        title: journey.title.en.slice(0, 160),
+        sourceName: journey.sourceName,
+        topic: journey.topic.slice(0, 160),
         provider: journey.provider,
         model: journey.model,
-        degraded: journey.degraded,
+        latencyMs: cached ? 0 : journey.latencyMs,
         grounded: journey.grounded,
-        learnerType: input.learnerType,
-        language: input.language,
-        constraint: input.constraint,
-        conceptCount: journey.conceptCount,
-        priorMastery: prior.hasEvidence ? prior.mastery : null,
-        attempts,
-      },
-      latencyMs: Date.now() - started,
-    });
+        degraded: journey.degraded,
+        data: journey,
+        createdAt: new Date(),
+      } as any),
+    ]);
 
-    return { journey, attempts, totalMs: Date.now() - started, adaptedFrom: prior };
+    this.later(
+      this.record(user, {
+        journeyId: journey.id,
+        type: 'journey_built',
+        payload: {
+          provider: journey.provider,
+          model: journey.model,
+          degraded: journey.degraded,
+          grounded: journey.grounded,
+          cached,
+          learnerType: input.learnerType,
+          language: input.language,
+          constraint: input.constraintNote ? `custom: ${input.constraintNote}` : input.constraint,
+          conceptCount: journey.conceptCount,
+          priorMastery: prior.hasEvidence ? prior.mastery : null,
+          attempts,
+        },
+        latencyMs: Date.now() - started,
+      }),
+      'journey_built event',
+    );
+
+    // Pre-translate into the other languages in the background while the
+    // learner reads the lesson, so the language toggle is instant. A toggle
+    // that arrives mid-way joins the same in-flight job (singleflight).
+    // PREFETCH_LANGS= (empty) turns this off to save free-tier quota.
+    if (!journey.degraded) {
+      const langs = (process.env.PREFETCH_LANGS ?? 'ur,mix,en')
+        .split(',')
+        .map((l) => l.trim())
+        .filter((l): l is Language => ['en', 'ur', 'mix'].includes(l) && l !== journey.language);
+      for (const l of langs) this.later(this.translate(user, journey.id, l), `prefetch ${l}`);
+    }
+
+    return {
+      journey: { ...publicJourney(journey), latencyMs: cached ? 0 : journey.latencyMs },
+      attempts,
+      cached,
+      totalMs: Date.now() - started,
+      adaptedFrom: prior,
+    };
   }
 
   async sample(user: AuthUser) {
@@ -121,14 +272,12 @@ export class LearnService {
         createdAt: new Date(),
       } as any);
     }
-    return journey;
+    return publicJourney(journey);
   }
 
-  async get(journeyId: string): Promise<Journey> {
-    if (journeyId === 'sample_cardiac') return sampleJourney(await this.cfg.get());
-    const row = await this.store.findJourney(journeyId);
-    if (!row) throw new NotFoundException('That mission no longer exists. Build a new one.');
-    return row.data as Journey;
+  /** The learner-safe view of a journey: no answer key. */
+  async get(journeyId: string, user: AuthUser): Promise<Journey> {
+    return publicJourney(await this.load(journeyId, user));
   }
 
   /* -------------------------------------------------------------- events */
@@ -167,16 +316,17 @@ export class LearnService {
   /* --------------------------------------------------------------- state */
 
   async state(user: AuthUser, journeyId?: string) {
-    const config = await this.cfg.get();
-    const rows = await this.store.listEvents({ learnerId: user.sub, journeyId });
+    const [config, rows, dbUser, journey] = await Promise.all([
+      this.cfg.get(),
+      this.store.listEvents({ learnerId: user.sub, journeyId }),
+      this.store.findUser(user.sub),
+      journeyId ? this.load(journeyId, user).catch(() => null) : Promise.resolve(null),
+    ]);
     const events = this.toEngineEvents(rows);
     const mastery = inferMastery(events, config);
-    const dbUser = await this.store.findUser(user.sub);
     const progress = progressFromXp(dbUser?.xp ?? 0, config);
     progress.badges = dbUser?.badges ?? [];
     progress.streakDays = dbUser?.streakDays ?? 0;
-
-    const journey = journeyId ? await this.get(journeyId).catch(() => null) : null;
     const adaptation = adapt({
       mastery,
       events,
@@ -208,10 +358,9 @@ export class LearnService {
   /* ---------------------------------------------------------- step 1 sim */
 
   /**
-   * Grades whichever mechanic this step runs. Grading is always server-side:
-   * the correct order, the correct states and the best option never reach the
-   * browser before the learner has committed, so the board cannot be read out
-   * of the network tab and brute-forced.
+   * Grades whichever mechanic this step runs. Grading is server-side and the
+   * answer key is stripped from the journey the browser receives, so the board
+   * cannot be read out of the network tab.
    */
   async runSim(
     user: AuthUser,
@@ -227,10 +376,12 @@ export class LearnService {
       seconds: number;
       statedConfidence?: number;
       sessionId?: string;
+      language?: string;
     },
   ) {
-    const journey = await this.get(journeyId);
-    const step = journey.steps.find((s) => s.id === body.stepId) ?? journey.steps[0];
+    const journey = await this.loadFor(journeyId, user, body.language);
+    const step = this.stepOf(journey, body.stepId, 0);
+    if (step.kind !== 'simulate') throw new BadRequestException('That step has no simulation.');
     const mechanic = step.mechanic ?? 'sort';
 
     let correctRatio = 0;
@@ -241,8 +392,6 @@ export class LearnService {
     if (mechanic === 'order' && step.order) {
       const expected = step.order.correctOrder;
       const got = Array.isArray(body.order) ? body.order : [];
-      // Partial credit for adjacency, not just exact position — getting the
-      // shape of a process right matters even if one pair is transposed.
       const positional = expected.filter((id, i) => got[i] === id).length / Math.max(1, expected.length);
       const pairs = expected.slice(0, -1).filter((id, i) => {
         const a = got.indexOf(id);
@@ -269,11 +418,15 @@ export class LearnService {
       passed = body.nodeId === step.trace.correctNodeId;
       correctRatio = passed ? 1 : 0;
       message = passed ? step.trace.successMessage : step.trace.failureMessage;
-      detail = {
-        correctNodeId: passed ? step.trace.correctNodeId : undefined,
-        path: step.trace.nodes.map((n) => n.id),
-        riseAt: step.trace.meterRisesAtNodeId,
-      };
+      // The flow animation and node details ARE the answer, so they are only
+      // sent once the learner has got it.
+      detail = passed
+        ? {
+            correctNodeId: step.trace.correctNodeId,
+            riseAt: step.trace.meterRisesAtNodeId,
+            details: Object.fromEntries(step.trace.nodes.map((n) => [n.id, n.detail])),
+          }
+        : {};
     } else {
       const sim = step.sim;
       if (!sim) throw new BadRequestException('That step has no interaction.');
@@ -287,13 +440,13 @@ export class LearnService {
       passed = correctRatio === 1;
       message = passed ? sim.successMessage : sim.failureMessage;
       detail = {
-        // On failure we say how many are wrong but never which — otherwise the
-        // learner brute-forces the board instead of reasoning about it.
+        // How many are wrong, never which — otherwise the board gets brute-forced.
         results: passed ? results : results.map((r) => ({ id: r.id, chosen: r.chosen })),
         wrongCount: results.filter((r) => !r.ok).length,
       };
     }
 
+    // Awaited: /complete checks for this event immediately afterwards.
     await this.record(user, {
       journeyId,
       stepId: step.id,
@@ -317,46 +470,67 @@ export class LearnService {
   /* ------------------------------------------------------- step 2 inquire */
 
   async ask(user: AuthUser, journeyId: string, body: { stepId: string; question: string; language: Language; history?: any[]; sessionId?: string }) {
-    const config = await this.cfg.get();
-    const journey = await this.get(journeyId);
-    const step = journey.steps.find((s) => s.id === body.stepId) ?? journey.steps[1];
+    const [config, journey] = await Promise.all([this.cfg.get(), this.loadFor(journeyId, user, body.language)]);
+    const step = this.stepOf(journey, body.stepId, 1);
+    if (step.kind !== 'inquire') throw new BadRequestException('That step is not a conversation step.');
 
-    const res = await answerQuestion({
-      journey,
-      step,
-      question: body.question,
-      language: body.language ?? journey.language,
-      history: Array.isArray(body.history) ? body.history.slice(-6) : [],
-      cfg: config,
-      log: (m) => this.log.log(m),
-    });
-    Metrics.aiCall(res.provider, !res.degraded, res.latencyMs);
+    const history = (Array.isArray(body.history) ? body.history : [])
+      .slice(-6)
+      .map((h: any) => ({
+        role: h?.role === 'learner' ? ('learner' as const) : ('persona' as const),
+        text: String(h?.text ?? '').slice(0, 800),
+      }));
+    const language = body.language ?? journey.language;
 
+    // The same opening question on the same mission gets the same answer —
+    // suggested-question chips are clicked by almost every learner.
+    const key =
+      'ask:' +
+      CacheService.key(journeyId, step.id, language, body.question.trim().toLowerCase(), history.slice(-2));
+    const { value: res, cached } = await this.cache.wrap(
+      key,
+      86400,
+      () =>
+        answerQuestion({
+          journey,
+          step,
+          question: body.question,
+          language,
+          history,
+          cfg: config,
+          log: (m) => this.log.log(m),
+        }),
+      { accept: (r) => !r.degraded },
+    );
+    if (!cached) Metrics.aiCall(res.provider, !res.degraded, res.latencyMs);
+
+    // Awaited so /complete can verify the learner actually engaged.
     await this.record(user, {
       journeyId,
       stepId: step.id,
       type: 'question_asked',
       sessionId: body.sessionId,
-      latencyMs: res.latencyMs,
+      latencyMs: cached ? 0 : res.latencyMs,
       payload: {
         questionLength: body.question?.length ?? 0,
         factsSurfaced: res.factsSurfaced,
         grounded: res.grounded,
+        basis: res.basis,
         provider: res.provider,
-        language: body.language ?? journey.language,
+        cached,
+        language,
       },
     });
 
     const totalFacts = step.inquire?.mustSurfaceFacts.length ?? 0;
-    return { ...res, totalFacts };
+    return { ...res, cached, totalFacts };
   }
 
   /* ------------------------------------------------------- step 3 explain */
 
   async explain(user: AuthUser, journeyId: string, body: { stepId: string; answer: string; language: Language; seconds?: number; sessionId?: string }) {
-    const config = await this.cfg.get();
-    const journey = await this.get(journeyId);
-    const step = journey.steps.find((s) => s.id === body.stepId) ?? journey.steps[2];
+    const [config, journey] = await Promise.all([this.cfg.get(), this.loadFor(journeyId, user, body.language)]);
+    const step = this.stepOf(journey, body.stepId, 2);
     if (!step.explain) throw new BadRequestException('That step is not an explain-back step.');
 
     const res = await gradeExplanation({
@@ -384,60 +558,98 @@ export class LearnService {
       },
     });
 
-    return res;
+    // The model answer is only released once the learner has made their own attempt.
+    return { ...res, modelAnswer: step.explain.modelAnswer };
   }
 
-  /** The learner reports catching their own mistake — a first-class mastery signal. */
+  /**
+   * The learner reports catching their own mistake. Only counted when there is
+   * a failed run on this step to have caught, and only once per step —
+   * otherwise the button is a free mastery pump.
+   */
   async selfCorrect(user: AuthUser, journeyId: string, stepId: string, note: string) {
+    const journey = await this.load(journeyId, user);
+    const step = this.stepOf(journey, stepId, 0);
+    const rows = await this.store.listEvents({ learnerId: user.sub, journeyId });
+    const onStep = rows.filter((r) => r.stepId === step.id);
+    const hadMiss = onStep.some((r) => r.type === 'sim_run' && !(r.payload as any)?.passed && !(r.payload as any)?.revealed);
+    const already = onStep.some((r) => r.type === 'self_corrected');
+    if (!hadMiss || already) return { ok: true, counted: false };
     await this.record(user, {
       journeyId,
-      stepId,
+      stepId: step.id,
       type: 'self_corrected',
       payload: { note: String(note ?? '').slice(0, 300) },
     });
-    return { ok: true };
+    return { ok: true, counted: true };
   }
 
   /* ------------------------------------------------- completion + rewards */
 
+  /**
+   * Completion is verified against what the server itself recorded. The old
+   * endpoint trusted the client's `score` and never checked the step was
+   * actually done — one POST per step was free XP and a perfect mastery score.
+   */
   async completeStep(
     user: AuthUser,
     journeyId: string,
     body: { stepId: string; hintsUsed?: number; seconds?: number; score?: number; sessionId?: string },
   ) {
-    const config = await this.cfg.get();
-    const journey = await this.get(journeyId);
-    const stepIndex = Math.max(0, journey.steps.findIndex((s) => s.id === body.stepId));
+    const [config, journey, prior, allRows, dbUser] = await Promise.all([
+      this.cfg.get(),
+      this.load(journeyId, user),
+      this.store.listEvents({ learnerId: user.sub, journeyId }),
+      this.store.listEvents({ learnerId: user.sub }),
+      this.store.findUser(user.sub),
+    ]);
+    const step = this.stepOf(journey, body.stepId, 0);
+    const stepIndex = Math.max(0, journey.steps.findIndex((s) => s.id === step.id));
+    const onStep = prior.filter((e) => e.stepId === step.id);
 
-    const prior = await this.store.listEvents({ learnerId: user.sub, journeyId });
-    const already = prior.some((e) => e.type === 'step_completed' && e.stepId === body.stepId);
+    let score: number | undefined;
+    if (step.kind === 'simulate') {
+      const runs = onStep.filter((e) => e.type === 'sim_run');
+      const passedRun = [...runs].reverse().find((e) => (e.payload as any)?.passed);
+      const revealed = runs.some((e) => (e.payload as any)?.revealed);
+      if (!passedRun && !revealed) throw new BadRequestException('Run the simulation first.');
+      score = passedRun ? Number((passedRun.payload as any)?.correctRatio ?? 0) : 0;
+    } else if (step.kind === 'inquire') {
+      if (!onStep.some((e) => e.type === 'question_asked')) {
+        throw new BadRequestException('Ask the persona at least one question first.');
+      }
+    } else {
+      const graded = onStep.filter((e) => e.type === 'explain_submitted');
+      if (!graded.length) throw new BadRequestException('Submit your explanation first.');
+      score = Math.max(...graded.map((e) => Number((e.payload as any)?.score ?? 0)));
+    }
+    const hintsUsed = onStep.filter((e) => e.type === 'hint_used').length;
 
+    const already = onStep.some((e) => e.type === 'step_completed');
     const lastEvent = prior[prior.length - 1];
     const gapMinutes = lastEvent
       ? Math.round((Date.now() - new Date(lastEvent.createdAt).getTime()) / 60000)
       : 0;
 
-    await this.record(user, {
+    const completedRow = await this.record(user, {
       journeyId,
-      stepId: body.stepId,
+      stepId: step.id,
       type: 'step_completed',
       sessionId: body.sessionId,
       payload: {
         stepIndex,
-        hintsUsed: Number(body.hintsUsed) || 0,
+        hintsUsed,
         seconds: Number(body.seconds) || 0,
-        score: typeof body.score === 'number' ? body.score : undefined,
+        score,
         gapMinutesSincePrevious: gapMinutes,
         replay: already,
         language: journey.language,
       },
     });
 
-    const rows = await this.store.listEvents({ learnerId: user.sub });
-    const events = this.toEngineEvents(rows);
-    const mastery = inferMastery(this.toEngineEvents(rows.filter((r) => r.journeyId === journeyId)), config);
-
-    const dbUser = await this.store.findUser(user.sub);
+    const journeyRows = [...prior, completedRow];
+    const events = this.toEngineEvents([...allRows, completedRow]);
+    const mastery = inferMastery(this.toEngineEvents(journeyRows), config);
     const currentXp = dbUser?.xp ?? 0;
 
     // Replaying a completed step gives feedback but never XP again.
@@ -453,7 +665,7 @@ export class LearnService {
           currentXp,
           earnedBadges: dbUser?.badges ?? [],
           stepIndex,
-          hintsUsedInStep: Number(body.hintsUsed) || 0,
+          hintsUsedInStep: hintsUsed,
           events,
           mastery,
           cfg: config,
@@ -479,21 +691,16 @@ export class LearnService {
       });
       outcome.progress.streakDays = streak;
 
-      for (const b of outcome.newBadges) {
-        await this.record(user, { journeyId, stepId: body.stepId, type: 'badge_unlocked', payload: { badgeId: b.id } });
-      }
+      const side: Promise<unknown>[] = outcome.newBadges.map((b: any) =>
+        this.record(user, { journeyId, stepId: step.id, type: 'badge_unlocked', payload: { badgeId: b.id } }),
+      );
       if (outcome.leveledUp) {
-        await this.record(user, { journeyId, stepId: body.stepId, type: 'level_up', payload: { level: outcome.progress.level } });
+        side.push(this.record(user, { journeyId, stepId: step.id, type: 'level_up', payload: { level: outcome.progress.level } }));
       }
+      this.later(Promise.all(side), 'badge/level events');
     }
 
-    const adaptation = adapt({
-      mastery,
-      events,
-      currentDifficulty: journey.difficulty,
-      cfg: config,
-    });
-
+    const adaptation = adapt({ mastery, events, currentDifficulty: journey.difficulty, cfg: config });
     const nextStep = journey.steps[stepIndex + 1] ?? null;
     const unlocked = mastery.overall >= config.masteryUnlockThreshold;
 
@@ -502,6 +709,8 @@ export class LearnService {
       mastery,
       adaptation,
       alreadyCompleted: already,
+      stepLabel: step.label,
+      stepIndex,
       nextStepId: nextStep?.id ?? null,
       missionComplete: !nextStep,
       nextMissionUnlocked: unlocked,
@@ -509,79 +718,107 @@ export class LearnService {
     };
   }
 
-  async hint(user: AuthUser, journeyId: string, stepId: string, elementId: string) {
-    const journey = await this.get(journeyId);
-    const step = journey.steps.find((s) => s.id === stepId) ?? journey.steps[0];
-    const el = step.sim?.elements.find((e) => e.id === elementId);
-    const config = await this.cfg.get();
+  /**
+   * A hint for ANY mechanic (the old one only worked for sort boards), based on
+   * the learner's current board. Each hint is recorded and costs XP.
+   */
+  async hint(
+    user: AuthUser,
+    journeyId: string,
+    body: { stepId: string; states?: Record<string, number>; order?: string[]; optionId?: string; nodeId?: string; language?: string },
+  ) {
+    const [journey, config, rows] = await Promise.all([
+      this.loadFor(journeyId, user, body.language),
+      this.cfg.get(),
+      this.store.listEvents({ learnerId: user.sub, journeyId }),
+    ]);
+    const step = this.stepOf(journey, body.stepId, 0);
+    if (step.kind !== 'simulate') throw new BadRequestException('Hints are for the simulation step.');
+    const level = rows.filter((r) => r.type === 'hint_used' && r.stepId === step.id).length;
+    const h = hintFor(step, { ...body, level });
 
     await this.record(user, {
       journeyId,
-      stepId,
+      stepId: step.id,
       type: 'hint_used',
-      payload: { elementId, language: journey.language },
+      payload: { mechanic: step.mechanic ?? 'sort', level, language: journey.language },
     });
 
-    return {
-      hint: el?.hint ?? 'Go back to what the source said about this part.',
-      xpCost: config.hintPenaltyXp,
-    };
+    return { hint: h.hint, targetId: h.targetId, xpCost: config.hintPenaltyXp, hintsUsed: level + 1 };
   }
 
-  async generateMermaidDiagram(journeyId: string) {
-    const journey = await this.get(journeyId);
-    const config = await this.cfg.get();
-    const prompt = `Return ONLY valid Mermaid code (graph TD or flowchart) for a labeled educational diagram of "${journey.topic}". No markdown. No explanation. Just the Mermaid code.`;
-    const res = await completeWithFallback(
-      { system: prompt, user: 'Draw it.', json: false, maxTokens: 1024 },
-      config.providerOrder,
-      15000,
-      (m) => this.log.log(m)
-    );
-    const code = res?.text?.replace(/```mermaid\n|```/g, '').trim() ?? '';
-    return { mermaidCode: code };
+  /**
+   * "Show correct steps". Allowed — a stuck learner learns nothing staring at a
+   * board — but recorded, so the step scores zero on the decision signal.
+   */
+  async reveal(user: AuthUser, journeyId: string, stepId: string, lang?: string) {
+    const journey = await this.loadFor(journeyId, user, lang);
+    const step = this.stepOf(journey, stepId, 0);
+    if (step.kind !== 'simulate') throw new BadRequestException('Only the simulation step has a worked solution.');
+
+    await this.record(user, {
+      journeyId,
+      stepId: step.id,
+      type: 'sim_run',
+      payload: { mechanic: step.mechanic ?? 'sort', revealed: true, correctRatio: 0, passed: false, attempt: 99 },
+    });
+
+    return revealFor(step);
   }
 
-  async generateSvgDiagram(journeyId: string) {
-    const journey = await this.get(journeyId);
+  /* ------------------------------------------------------------ diagrams */
+
+  /**
+   * Diagrams depend only on the topic and language, so they are cached by that —
+   * the second press of "Show a diagram", or a second learner on the same topic,
+   * gets the stored SVG instantly instead of another 15-25 s model call.
+   */
+  async generateMermaidDiagram(user: AuthUser, journeyId: string, force = false) {
+    const journey = await this.load(journeyId, user);
     const config = await this.cfg.get();
-    const prompt = `You are an expert infographic designer. Create a detailed, visually rich educational infographic as valid SVG for the topic: "${journey.topic}".
-
-STRICT RULES — follow every one:
-1. Return ONLY raw SVG code. No markdown, no backticks, no explanation, no XML declaration.
-2. Start directly with <svg and end with </svg>.
-3. Use viewBox="0 0 900 600" width="900" height="600".
-4. Dark background: fill the entire canvas with a rect fill="#0f172a" (dark navy).
-
-DESIGN REQUIREMENTS:
-- Title bar at top: large bold white title text for the topic.
-- Divide into 4–6 clearly labeled sections using colored rounded rectangles as section cards.
-- Each section card: rounded rect with semi-transparent colored fill (use variety: blue #1e40af, teal #0f766e, purple #6d28d9, amber #92400e, rose #9f1239 — all at 30–40% opacity), white border (stroke="#ffffff" stroke-opacity="0.15"), padding inside.
-- Inside each card: bold white section header text, then 2–4 bullet-point style facts as smaller white/light-gray text (use ● or → as bullet prefix).
-- Use colored accent circles or icons (simple geometric shapes: circles, triangles, arrows) as visual markers.
-- Add directional arrows (→ or curved SVG paths) between sections to show flow or sequence if the topic is a process.
-- Add a small legend or key section at the bottom if relevant.
-- Use font-family="system-ui, sans-serif" throughout.
-- All text must be clearly readable against the dark background.
-- Make it visually professional, like a slide you would show in a class or training session.
-- Minimum 400 words worth of labeled content distributed across the infographic.
-
-Topic: "${journey.topic}"
-
-Return the complete SVG infographic now.`;
-
-    const res = await completeWithFallback(
-      { system: prompt, user: `Generate the infographic SVG for: ${journey.topic}`, json: false, maxTokens: 4096 },
-      config.providerOrder,
-      25000,
-      (m) => this.log.log(m)
+    const key = 'dgm:' + CacheService.key(journey.topic.toLowerCase(), journey.language);
+    const { value, cached } = await this.cache.wrap(
+      key,
+      30 * 86400,
+      async () => {
+        const res = await completeWithFallback(
+          {
+            system: `Return ONLY valid Mermaid code (graph TD or flowchart) for a labeled educational diagram of the topic the user gives. No markdown. No explanation.`,
+            user: `Topic: ${journey.topic.slice(0, 200)}`,
+            json: false,
+            maxTokens: 1024,
+          },
+          config.providerOrder,
+          15000,
+          (m) => this.log.log(m),
+        );
+        return { mermaidCode: res?.text?.replace(/```mermaid\n|```/g, '').trim() ?? '' };
+      },
+      { force, accept: (v) => Boolean(v.mermaidCode) },
     );
-    const raw = res?.text ?? '';
-    // Strip any markdown fences
-    const svg = raw
-      .replace(/```(?:xml|svg|html)?\n?/gi, '')
-      .replace(/```/g, '')
-      .trim();
-    return { svg };
+    return { ...value, cached };
+  }
+
+  /**
+   * Infographic: the model supplies a small JSON outline (1-3 s) and the SVG is
+   * drawn in code. If the model is slow or down, the outline comes from the
+   * lesson, so this endpoint always returns a diagram.
+   */
+  async generateSvgDiagram(user: AuthUser, journeyId: string, force = false, lang?: string) {
+    const journey = await this.loadFor(journeyId, user, lang);
+    const config = await this.cfg.get();
+    const key = 'dgi2:' + CacheService.key(journey.topic.toLowerCase(), journey.language, journey.learnerType.toLowerCase());
+    const { value, cached } = await this.cache.wrap(
+      key,
+      30 * 86400,
+      async () => {
+        const ai = await outlineWithModel(journey, config, (m) => this.log.log(m)).catch(() => null);
+        const outline = ai ?? outlineFromLesson(journey);
+        return { svg: renderInfographic(outline, journey.language === 'ur'), source: ai ? 'ai' : 'lesson' };
+      },
+      // A lesson-only fallback is fine to show, but retry the model next time.
+      { force, accept: (v) => v.source === 'ai' },
+    );
+    return { ...value, cached };
   }
 }

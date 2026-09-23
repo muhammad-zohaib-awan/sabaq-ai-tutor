@@ -8,13 +8,27 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const log = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule, { bodyParser: true });
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+
+  // Behind Render/Railway/Fly there is exactly one proxy hop. Without this every
+  // request looks like it comes from the proxy, so the rate limiter either
+  // throttles everyone together or can be dodged with a spoofed header.
+  const express = app.getHttpAdapter().getInstance();
+  express.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1));
+  express.disable('x-powered-by');
+  // Explicit, small body limits: the only large payload is a file upload,
+  // which multer bounds separately.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const bodyParser = require('body-parser');
+  app.use(bodyParser.json({ limit: '200kb' }));
+  app.use(bodyParser.urlencoded({ extended: false, limit: '50kb' }));
 
   app.use(
     helmet({
-      // The API serves JSON and file downloads only; no HTML, so no CSP surface.
-      contentSecurityPolicy: false,
+      // JSON only: the strictest possible CSP costs nothing.
+      contentSecurityPolicy: { directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } },
       crossOriginResourcePolicy: { policy: 'cross-origin' },
+      hsts: process.env.NODE_ENV === 'production' ? { maxAge: 15552000, includeSubDomains: true } : false,
     }),
   );
 
@@ -27,10 +41,18 @@ async function bootstrap() {
     origin: (origin, cb) => {
       // Same-origin/server-to-server requests arrive with no Origin header.
       if (!origin) return cb(null, true);
-      if (origins.includes('*') || origins.includes(origin)) return cb(null, true);
-      // Allow Vercel preview deployments of this project without hardcoding hashes.
-      if (process.env.ALLOW_VERCEL_PREVIEWS === 'true' && /\.vercel\.app$/.test(new URL(origin).hostname)) {
-        return cb(null, true);
+      if (origins.includes(origin)) return cb(null, true);
+      if (origins.includes('*') && process.env.NODE_ENV !== 'production') return cb(null, true);
+      // Vercel previews of THIS project only. Matching any *.vercel.app would
+      // let anyone who deploys a site there make credentialed calls.
+      const prefix = process.env.VERCEL_PREVIEW_PREFIX?.trim();
+      if (prefix && process.env.ALLOW_VERCEL_PREVIEWS === 'true') {
+        try {
+          const host = new URL(origin).hostname;
+          if (host.endsWith('.vercel.app') && host.startsWith(prefix)) return cb(null, true);
+        } catch {
+          /* malformed origin */
+        }
       }
       return cb(new Error(`Origin ${origin} is not allowed`), false);
     },

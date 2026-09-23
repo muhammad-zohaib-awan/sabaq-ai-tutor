@@ -58,9 +58,25 @@ export class StoreService implements OnModuleInit {
             : false,
         extra: { max: Number(process.env.DB_POOL_MAX ?? 5), connectionTimeoutMillis: 10000 },
       });
-      await this.ds.initialize();
-      this.mode = 'postgres';
-      this.log.log('Connected to Postgres.');
+      // Connect in the background. Awaiting here blocks the whole boot behind
+      // the driver's connect timeout — on a free-tier container that is dead
+      // air before the port even opens, and a cold start the panel sits through.
+      // Requests that arrive first are served from memory and the store swaps
+      // over the moment Postgres answers.
+      const ds = this.ds;
+      void ds
+        .initialize()
+        .then(() => {
+          this.mode = 'postgres';
+          this.log.log('Connected to Postgres.');
+        })
+        .catch((e: any) => {
+          this.lastDbError = String(e?.message ?? e).slice(0, 300);
+          this.ds = null;
+          this.log.error(
+            `Postgres unavailable (${this.lastDbError}) — serving from in-memory storage.`,
+          );
+        });
     } catch (e: any) {
       this.lastDbError = String(e?.message ?? e).slice(0, 300);
       this.ds = null;

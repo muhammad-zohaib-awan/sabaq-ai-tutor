@@ -57,9 +57,9 @@ let geminiModelCache: string | null = null;
  * list — a model retirement degrades to the next model instead of a dead demo.
  */
 async function geminiCandidates(key: string, exclude: Set<string>): Promise<string[]> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`,
-  );
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+    headers: { 'x-goog-api-key': key },
+  });
   if (!res.ok) throw new Error(`model discovery failed: HTTP ${res.status}`);
   const data: any = await res.json();
 
@@ -92,6 +92,19 @@ const TRANSIENT = /HTTP 429|HTTP 50[023]|UNAVAILABLE|high demand|overloaded|RESO
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Keep "thinking" minimal. Every generation here is structured writing, not
+ * multi-step maths — hidden reasoning only adds seconds of latency and eats the
+ * output budget. GEMINI_THINKING=on restores the model default.
+ */
+function geminiThinking(model: string): Record<string, unknown> | undefined {
+  if (env('GEMINI_THINKING') === 'on') return undefined;
+  if (/gemini-2\.5-flash/i.test(model)) return { thinkingBudget: 0 };
+  if (/gemini-2\.5-pro/i.test(model)) return { thinkingBudget: 128 };
+  if (/gemini-[3-9]/i.test(model)) return { thinkingLevel: 'low' };
+  return undefined;
+}
+
 const gemini: AiProvider = {
   id: 'gemini',
   available: () => Boolean(env('GEMINI_API_KEY') || env('GOOGLE_API_KEY')),
@@ -99,26 +112,45 @@ const gemini: AiProvider = {
     const key = (env('GEMINI_API_KEY') || env('GOOGLE_API_KEY'))!;
     const started = Date.now();
 
-    const call = async (model: string) => {
+    const call = async (model: string, withThinking = true) => {
+      const thinking = withThinking ? geminiThinking(model) : undefined;
       const body: any = {
         systemInstruction: { parts: [{ text: req.system }] },
         contents: [{ role: 'user', parts: [{ text: req.user }] }],
         generationConfig: {
           temperature: req.temperature ?? 0.7,
-          maxOutputTokens: req.maxTokens ?? 4096,
+          // Thinking models count their hidden reasoning against this budget.
+          // Without headroom a "2-4 sentence" reply gets cut off mid-word.
+          maxOutputTokens: (req.maxTokens ?? 4096) + (thinking ? 0 : 1024),
           ...(req.json ? { responseMimeType: 'application/json' } : {}),
+          ...(thinking ? { thinkingConfig: thinking } : {}),
         },
       };
-      const data = await postJson(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
-        body,
-        {},
-      );
+      let data: any;
+      try {
+        data = await postJson(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+          body,
+          // Header, not query string: keys in URLs end up in proxy and access logs.
+          { 'x-goog-api-key': key },
+        );
+      } catch (e: any) {
+        // Some models reject thinkingConfig. Retry once without it.
+        if (thinking && /HTTP 400/.test(String(e?.message)) && /thinking/i.test(String(e?.message))) {
+          return call(model, false);
+        }
+        throw e;
+      }
+      const cand = data?.candidates?.[0];
       const text: string =
-        data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? '').join('') ?? '';
+        cand?.content?.parts?.filter((p: any) => !p.thought).map((p: any) => p.text ?? '').join('') ?? '';
       if (!text) {
-        const reason = data?.candidates?.[0]?.finishReason ?? data?.promptFeedback?.blockReason;
+        const reason = cand?.finishReason ?? data?.promptFeedback?.blockReason;
         throw new Error(`gemini returned no text${reason ? ` (${reason})` : ''}`);
+      }
+      if (cand?.finishReason === 'MAX_TOKENS' && req.json) {
+        // Truncated JSON is unparseable; let the chain try the next model/provider.
+        throw new Error('gemini hit MAX_TOKENS before finishing the JSON');
       }
       geminiModelCache = model;
       return { text, provider: 'gemini', model, latencyMs: Date.now() - started };

@@ -1,8 +1,11 @@
 import { Injectable, Logger, OnModuleInit, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { StoreService } from '../store/store.service';
 import { signToken, type AuthUser, type Role } from '../common/auth.guards';
+
+// A real hash, so an unknown email costs the same time as a wrong password.
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12);
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -11,21 +14,26 @@ export class AuthService implements OnModuleInit {
   constructor(private readonly store: StoreService) {}
 
   async onModuleInit() {
+    // No hardcoded fallback passwords. A missing password gets a random one,
+    // printed once to the server log, so a fresh deploy is never protected by
+    // a password that is in the README.
+    const gen = (role: string) => {
+      const p = randomBytes(12).toString('base64url');
+      this.log.warn(`${role.toUpperCase()}_PASSWORD not set — generated one for this boot: ${p}`);
+      return p;
+    };
     await this.seed(
       process.env.ADMIN_EMAIL ?? 'admin@sabaq.app',
-      process.env.ADMIN_PASSWORD ?? 'Admin@12345',
+      process.env.ADMIN_PASSWORD || gen('admin'),
       'admin',
       'Admin',
     );
     await this.seed(
       process.env.LEARNER_EMAIL ?? 'learner@sabaq.app',
-      process.env.LEARNER_PASSWORD ?? 'Learner@12345',
+      process.env.LEARNER_PASSWORD || gen('learner'),
       'learner',
       'Demo Learner',
     );
-    if (!process.env.ADMIN_PASSWORD) {
-      this.log.warn('ADMIN_PASSWORD not set — using the documented default. Set it before the panel demo.');
-    }
   }
 
   private async seed(email: string, password: string, role: Role, name: string) {
@@ -36,8 +44,8 @@ export class AuthService implements OnModuleInit {
       email,
       name,
       role,
-      passwordHash: await bcrypt.hash(password, 10),
-      learnerType: process.env.DEFAULT_LEARNER_TYPE ?? 'Nursing trainee',
+      passwordHash: await bcrypt.hash(password, 12),
+      learnerType: process.env.DEFAULT_LEARNER_TYPE ?? 'Curious learner',
     });
     this.log.log(`Seeded ${role} account ${email}`);
   }
@@ -45,7 +53,7 @@ export class AuthService implements OnModuleInit {
   async login(email: string, password: string) {
     const user = await this.store.findUserByEmail(String(email ?? '').trim());
     // Constant-ish work either way so a wrong email and a wrong password look the same.
-    const ok = user ? await bcrypt.compare(password ?? '', user.passwordHash) : await bcrypt.compare('x', '$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvali');
+    const ok = user ? await bcrypt.compare(password ?? '', user.passwordHash) : await bcrypt.compare(String(password ?? ''), DUMMY_HASH);
     if (!user || !ok) throw new UnauthorizedException('Email or password is incorrect.');
     return this.issue(user);
   }
@@ -54,9 +62,24 @@ export class AuthService implements OnModuleInit {
    * One-click demo sign-in for the assessment panel. Disabled by setting
    * DEMO_LOGIN=false — it exists so nobody has to type a password on stage.
    */
+  /**
+   * Which one-click demo roles this deployment allows.
+   *
+   * Note: a password-less ADMIN button on a public URL gives anyone the
+   * reports, audit log and config. Fine for the panel demo; turn it off after.
+   */
+  demoRoles(): Role[] {
+    // DEMO_LOGIN=true shows BOTH buttons (Demo Learner + Demo Admin).
+    // Set DEMO_ADMIN_LOGIN=false to keep only the learner button on a public URL.
+    if (process.env.DEMO_LOGIN !== 'true') return [];
+    const roles: Role[] = ['learner'];
+    if (process.env.DEMO_ADMIN_LOGIN !== 'false') roles.push('admin');
+    return roles;
+  }
+
   async demoLogin(role: Role) {
-    if (process.env.DEMO_LOGIN === 'false') {
-      throw new UnauthorizedException('Demo sign-in is disabled on this deployment.');
+    if (!this.demoRoles().includes(role)) {
+      throw new UnauthorizedException('Demo sign-in for that role is disabled on this deployment.');
     }
     const email = role === 'admin'
       ? (process.env.ADMIN_EMAIL ?? 'admin@sabaq.app')

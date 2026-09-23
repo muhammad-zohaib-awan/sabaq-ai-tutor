@@ -5,24 +5,7 @@ import { api } from '@/lib/api';
 import { useApp } from '@/lib/state';
 import { canListen, listen, type Listener } from '@/lib/speech';
 import type { Lang } from '@/lib/i18n';
-
-const LEARNER_TYPES = [
-  'Nursing trainee',
-  'Bank branch officer',
-  'Call centre agent',
-  'New joiner (any role)',
-  'School student',
-  'Compliance analyst',
-  'Software engineer',
-];
-
-const CONSTRAINTS: Array<{ id: string; label: string; help: string }> = [
-  { id: 'standard', label: 'Standard', help: 'No special constraint.' },
-  { id: 'low_bandwidth', label: 'Low bandwidth', help: 'Short text, no waveform, minimal visuals.' },
-  { id: 'voice_only', label: 'Voice only', help: 'Everything must make sense read aloud.' },
-  { id: 'accessibility', label: 'Accessibility', help: 'Screen-reader first, no colour-only meaning.' },
-  { id: 'offline_first', label: 'Offline first', help: 'Self-contained, no external references.' },
-];
+import { LearnerFields, defaultLearnerValue, resolveLearner, type LearnerValue } from './LearnerFields';
 
 /**
  * The panel's live test lands here: drop unseen content, change the learner type,
@@ -32,8 +15,7 @@ export function LiveTestModal({ onClose }: { onClose: () => void }) {
   const { setJourney, refreshState, toast, lang, setLang } = useApp();
   const [file, setFile] = useState<File | null>(null);
   const [text, setText] = useState('');
-  const [learnerType, setLearnerType] = useState(LEARNER_TYPES[0]);
-  const [constraint, setConstraint] = useState('standard');
+  const [learner, setLearner] = useState<LearnerValue>(defaultLearnerValue('Nursing trainee'));
   const [difficulty, setDifficulty] = useState(3);
   const [buildLang, setBuildLang] = useState<Lang>(lang);
   const [busy, setBusy] = useState(false);
@@ -82,6 +64,7 @@ export function LiveTestModal({ onClose }: { onClose: () => void }) {
     if (!file && !text.trim()) {
       return toast('error', 'Drop a file, or paste some text or a topic first.');
     }
+    const { learnerType, constraint, constraintNote } = resolveLearner(learner);
     setBusy(true);
     const started = Date.now();
     try {
@@ -92,17 +75,18 @@ export function LiveTestModal({ onClose }: { onClose: () => void }) {
         fd.append('learnerType', learnerType);
         fd.append('language', buildLang);
         fd.append('constraint', constraint);
+        if (constraintNote) fd.append('constraintNote', constraintNote);
         fd.append('difficulty', String(difficulty));
         res = await api.build(fd);
       } else {
         const looksLikeTopic = text.trim().length < 140 && !text.includes('\n');
         res = await api.build({
-          [looksLikeTopic ? 'topic' : 'text']: text.trim(),
           topic: looksLikeTopic ? text.trim() : '',
           text: looksLikeTopic ? '' : text.trim(),
           learnerType,
           language: buildLang,
           constraint,
+          constraintNote,
           difficulty,
         });
       }
@@ -199,6 +183,10 @@ export function LiveTestModal({ onClose }: { onClose: () => void }) {
             className="field resize-y"
             placeholder="e.g. Know Your Customer checks for new accounts"
           />
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-white/5 bg-ink-900/40 p-4">
+          <LearnerFields value={learner} onChange={setLearner} compact />
         </div>
 
         {/* Language + Difficulty row */}

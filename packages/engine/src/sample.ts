@@ -11,6 +11,11 @@ export function sampleJourney(cfg: EngineConfig = DEFAULT_CONFIG): Journey {
     id: 'sample_cardiac',
     createdAt: new Date().toISOString(),
     mode: 'scenario',
+    primer: {
+      en: 'The heart beats in two phases. In systole the ventricles squeeze and push blood out to the lungs and the body; in diastole they relax and refill. Four one-way valves keep that flow going in a single direction, and the sound of them closing is what you hear as the two heart sounds, S1 and S2. Any extra noise between those two sounds means blood is moving where it should not be.',
+      ur: 'دل دو مرحلوں میں دھڑکتا ہے۔ سسٹول میں ونٹریکلز سکڑ کر خون کو پھیپھڑوں اور جسم کی طرف دھکیلتے ہیں؛ ڈائیسٹول میں وہ ڈھیلے ہو کر دوبارہ بھرتے ہیں۔ چار یک طرفہ والوز خون کو صرف ایک ہی سمت میں بہنے دیتے ہیں، اور اِنہی کے بند ہونے کی آواز کو ہم S1 اور S2 کہتے ہیں۔ اِن دو آوازوں کے درمیان کوئی اضافی آواز کا مطلب ہے کہ خون وہاں جا رہا ہے جہاں اسے نہیں جانا چاہیے۔',
+      mix: 'Dil do phases mein dharakta hai. Systole mein ventricles squeeze kar ke khoon ko lungs aur jism ki taraf bhejte hain; diastole mein wo relax ho kar dobara bharte hain. Chaar one-way valves khoon ko sirf ek simt mein behne dete hain, aur inke band hone ki awaaz hi S1 aur S2 hai. In do awazon ke darmiyan koi extra awaaz ka matlab hai khoon wahan ja raha hai jahan nahi jana chahiye.',
+    },
     analogy: {
       en: 'Think of the heart as a four-room house where every door only opens one way. A murmur is the sound of a door that was supposed to be shut, letting people back through.',
       ur: 'دل کو چار کمروں کا ایک گھر سمجھیں جہاں ہر دروازہ صرف ایک ہی طرف کھلتا ہے۔ مرمر اُس دروازے کی آواز ہے جسے بند ہونا چاہیے تھا مگر وہ لوگوں کو واپس آنے دے رہا ہے۔',

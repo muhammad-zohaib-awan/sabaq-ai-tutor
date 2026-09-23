@@ -56,11 +56,11 @@ export function InquireStep({
 }: {
   journey: any;
   step: any;
-  onProgress: (facts: number, total: number) => void;
+  onProgress: (facts: number, total: number, asked: number) => void;
 }) {
   const { lang, toast } = useApp();
   const spec = step.inquire;
-  const [messages, setMessages] = useState<Array<{ role: 'learner' | 'persona'; text: string; grounded?: boolean }>>([
+  const [messages, setMessages] = useState<Array<{ role: 'learner' | 'persona'; text: string; grounded?: boolean; basis?: string }>>([
     { role: 'persona', text: spec?.openingLine ?? '' },
   ]);
   const [askedQuestions, setAskedQuestions] = useState<Set<string>>(new Set());
@@ -77,8 +77,8 @@ export function InquireStep({
   }, [messages]);
 
   useEffect(() => {
-    onProgress(found.size, total);
-  }, [found, total, onProgress]);
+    onProgress(found.size, total, messages.filter((m) => m.role === 'learner').length);
+  }, [found, total, onProgress, messages]);
 
   // Available suggested questions = those not yet asked
   const availableSuggestions = (spec?.suggestedQuestions ?? []).filter(
@@ -97,9 +97,9 @@ export function InquireStep({
         stepId: step.id,
         question: q,
         language: lang,
-        history: messages.slice(-8),
+        history: messages.slice(-8).map((m) => ({ role: m.role, text: m.text })),
       });
-      setMessages((m) => [...m, { role: 'persona', text: res.answer, grounded: res.grounded }]);
+      setMessages((m) => [...m, { role: 'persona', text: res.answer, grounded: res.grounded, basis: res.basis }]);
       if (res.factsSurfaced?.length) {
         setFound((f) => {
           const next = new Set(f);
@@ -124,7 +124,7 @@ export function InquireStep({
   // Generate a hint from un-surfaced facts
   const nextHintFact = spec?.mustSurfaceFacts?.find((f: any) => !found.has(f.id));
   const hintText = nextHintFact
-    ? `Try asking about: "${nextHintFact.hint ?? nextHintFact.fact?.split(' ').slice(0, 6).join(' ') + '…'}"`
+    ? `Try this: ${nextHintFact.hint ?? 'ask about the part you are least sure of.'}`
     : null;
 
   return (
@@ -177,10 +177,13 @@ export function InquireStep({
               } ${lang === 'ur' ? 'urdu' : ''}`}
             >
               {m.text}
-              {m.role === 'persona' && m.grounded === false && (
-                <span className="mt-1.5 block text-[11px] text-amber-300/70">
-                  ⚠️ Not directly in the source — try rephrasing or ask about something else.
+              {m.role === 'persona' && m.basis === 'offtopic' && (
+                <span className="mt-1.5 block text-[11px] text-amber-300/80">
+                  ↪️ Outside this topic — try one of the suggested questions.
                 </span>
+              )}
+              {m.role === 'persona' && m.basis === 'general' && journey.sourceKind === 'document' && (
+                <span className="mt-1.5 block text-[11px] text-sky-300/70">🌐 General knowledge, not from your document.</span>
               )}
             </div>
           </div>
@@ -276,8 +279,7 @@ export function ExplainStep({
   const words = answer.trim().split(/\s+/).filter(Boolean).length;
 
   // Phrase tiles — AI-supplied or auto-generated from rubric
-  const tiles: string[] = step.explain?.phraseTiles ?? 
-    (step.explain?.rubric ?? []).map((r: any) => r.label) ?? [];
+  const tiles: string[] = step.explain?.phraseTiles?.length ? step.explain.phraseTiles : [];
 
   function addTile(tile: string) {
     if (usedTiles.includes(tile)) return;
@@ -447,7 +449,7 @@ export function ExplainStep({
                 if (speaking) { stopSpeaking(); setSpeaking(false); return; }
                 setSpeaking(true);
                 void api.event({ type: 'voice_used', journeyId: journey.id, payload: { mode: 'output' } });
-                speak(step.explain?.modelAnswer ?? '', lang, () => setSpeaking(false));
+                speak(result.modelAnswer ?? '', lang, () => setSpeaking(false));
               }}
             >
               {speaking ? t('stop', lang) : '🔊 Hear a strong answer'}

@@ -18,7 +18,7 @@ npm run dev
 
 Frontend on **http://localhost:3000**, API on **http://localhost:4000**.
 
-On the sign-in screen press **Enter as Learner** or **Enter as Admin** — no password needed.
+Sign in with the admin/learner email and password from `apps/api/.env`. `DEMO_LOGIN=true` adds a one-click learner button; the one-click admin button needs `DEMO_ADMIN_LOGIN=true` and should stay off on a public URL.
 
 **It runs with zero configuration.** No database, no API key, nothing. The engine falls back to
 in-memory storage and a deterministic offline mission builder, and says so honestly in the UI. Add a
@@ -97,6 +97,15 @@ truncated to the network prefix. Learner free text is never written to reports o
 only derived scores and counts.
 
 ---
+
+## What changed in v2
+
+- **Launcher**: one sentence — *I want to learn ___ as a ___*. Typing or saying the whole sentence works too.
+- **Teach first**: every mission opens with a lesson (what it is, key points, a worked example for this learner, why it matters), then the scenario.
+- **Step 2 chat** answers from the lesson + a model-written knowledge base instead of refusing everything on topic-only missions; truncation fixed.
+- **Hint** works for every mechanic; **Show correct steps** gives the full worked solution.
+- **Speed**: single-language generation (≈3× fewer tokens), minimal Gemini thinking, Redis/in-memory cache with singleflight for missions, diagrams and chat, parallel DB I/O.
+- **Security**: answer key never sent to the browser, journey ownership checks, server-verified step completion (no XP/mastery farming), event-type whitelist, pinned JWT alg/iss/aud, no default passwords, admin demo login off by default, strict CORS, CSP, trust-proxy for correct rate limiting, SVG rendered via `<img>`, locked local fallback, Next.js patched.
 
 ## Admin reporting
 

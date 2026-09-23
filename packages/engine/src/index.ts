@@ -11,3 +11,6 @@ export * from './mastery';
 export * from './gamification';
 export * from './sample';
 export * from './interact';
+export * from './public';
+export * from './translate';
+export * from './infographic';

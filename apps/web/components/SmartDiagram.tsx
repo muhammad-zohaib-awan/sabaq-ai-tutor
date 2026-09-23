@@ -1,132 +1,97 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { api } from '@/lib/api';
+
+/**
+ * Generated infographic.
+ *
+ *  - Cached twice: here per journey (hide/show never refetches) and on the
+ *    server by topic (a second learner gets it instantly). "Regenerate" is the
+ *    only thing that asks the model again.
+ *  - Rendered as an <img> from a data: URL. Inside <img>, SVG cannot run
+ *    scripts or load anything, so model output can never touch the page.
+ */
+const memo = new Map<string, string>();
+
+function toDataUrl(svg: string) {
+  const bytes = new TextEncoder().encode(svg);
+  let bin = '';
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  return `data:image/svg+xml;base64,${btoa(bin)}`;
+}
 
 export function SmartDiagram({
   sessionId,
-  imagePrompt,
   topicTitle,
+  lang,
 }: {
   sessionId: string;
   imagePrompt?: string;
-  topicTitle: string;
+  topicTitle?: string;
+  lang?: string;
 }) {
-  const [svgCode, setSvgCode] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-  const [tier, setTier] = useState<'gemini' | 'fallback'>('gemini');
+  const mk = `${sessionId}:${lang ?? ''}`;
+  const [src, setSrc] = useState(() => memo.get(mk) ?? '');
+  const [loading, setLoading] = useState(!memo.has(mk));
+  const [error, setError] = useState('');
+
+  async function load(force = false) {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.diagramSvg(sessionId, force, lang);
+      if (!data?.svg?.includes('<svg')) throw new Error('No diagram came back. Try again.');
+      const url = toDataUrl(data.svg);
+      memo.set(mk, url);
+      setSrc(url);
+    } catch (e: any) {
+      setError(e?.message || 'Could not generate the diagram.');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    let isMounted = true;
-    setLoading(true);
-    setSvgCode('');
-    setError(false);
-    setTier('gemini');
-
-    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
-
-    // Tier 1: Gemini SVG via backend
-    (async () => {
-      try {
-        console.log('[SmartDiagram] Tier 1: Trying Gemini SVG…');
-        const res = await fetch(`${apiBase}/api/learn/${sessionId}/diagram-svg`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('sabaq.token')}` },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (data.svg && data.svg.includes('<svg') && isMounted) {
-          console.log('[SmartDiagram] Tier 1 success ✓');
-          setSvgCode(data.svg);
-          setLoading(false);
-          return;
-        }
-        throw new Error('No valid SVG returned');
-      } catch (err) {
-        console.warn('[SmartDiagram] Tier 1 (Gemini) failed, trying Tier 2 (Pollinations)…', err);
-        if (!isMounted) return;
-        setTier('fallback');
-        // Tier 2: Pollinations image fallback
-        if (!imagePrompt) {
-          setError(true);
-          setLoading(false);
-          return;
-        }
-        setLoading(false); // image loads via onLoad/onError
-      }
-    })();
-
-    return () => { isMounted = false; };
-  }, [sessionId, imagePrompt]);
-
-  if (!imagePrompt && !svgCode && !loading) return null;
+    if (memo.has(mk)) {
+      setSrc(memo.get(mk)!);
+      setLoading(false);
+      return;
+    }
+    void load(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mk]);
 
   return (
-    <div className="mt-4 animate-riseFade rounded-xl border border-white/10 bg-white/5 p-4 relative min-h-[200px]">
+    <div className="relative mt-4 min-h-[200px] animate-riseFade rounded-2xl border border-white/10 bg-slate-900/60 p-4">
       {loading && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center rounded-xl z-10">
-          <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/20 border-t-accent mb-2" />
-          <span className="text-xs text-slate-400 animate-pulse">Generating diagram with Gemini…</span>
+        <div className="flex flex-col items-center justify-center py-14 text-center">
+          <span className="mb-3 h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-accent" />
+          <p className="text-sm font-medium text-slate-200">Drawing a diagram of {topicTitle || 'this topic'}…</p>
+          <p className="mt-1 text-xs text-slate-400">A few seconds, only the first time — after that it is saved.</p>
         </div>
       )}
 
-      {/* Tier 1: Gemini SVG Infographic */}
-      {svgCode && (
+      {src && !loading && (
         <>
-          <div
-            dangerouslySetInnerHTML={{ __html: svgCode }}
-            className="w-full overflow-x-auto rounded-xl [&>svg]:w-full [&>svg]:h-auto [&>svg]:max-w-full"
-          />
-          <p className="mt-2 text-[11px] text-slate-500 text-center border-t border-white/10 pt-2">
-            AI-generated infographic (Gemini) · For learning only, not a primary source
-          </p>
+          <img src={src} alt={`Infographic: ${topicTitle ?? ''}`} className="h-auto w-full rounded-xl" />
+          <div className="mt-3 flex items-center justify-between border-t border-white/10 pt-3 text-xs text-slate-400">
+            <span>✨ AI-generated diagram — check key facts against the lesson</span>
+            <button onClick={() => void load(true)} className="text-xs text-accent hover:underline">
+              🔄 Regenerate
+            </button>
+          </div>
         </>
       )}
 
-      {/* Tier 2: Pollinations fallback image */}
-      {tier === 'fallback' && imagePrompt && !svgCode && (
-        <FallbackImage prompt={imagePrompt} />
-      )}
-
-      {error && !svgCode && (
-        <div className="flex items-center justify-center h-[200px] text-slate-500 text-sm">
-          Diagram not available for this topic.
+      {error && !loading && !src && (
+        <div className="flex flex-col items-center justify-center py-10 text-center text-slate-400">
+          <p className="mb-2 text-sm text-red-300">{error}</p>
+          <button onClick={() => void load(false)} className="btn-ghost mt-2 text-xs">
+            Try again
+          </button>
         </div>
       )}
     </div>
-  );
-}
-
-function FallbackImage({ prompt }: { prompt: string }) {
-  const [imgLoading, setImgLoading] = useState(true);
-  const [imgError, setImgError] = useState(false);
-
-  return (
-    <>
-      {imgError ? (
-        <div className="flex items-center justify-center h-[200px] text-slate-500 text-sm">
-          Diagram not available for this topic.
-        </div>
-      ) : (
-        <div className="relative">
-          {imgLoading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-white/5 rounded-xl">
-              <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/20 border-t-accent" />
-            </div>
-          )}
-          <img
-            src={`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=880&height=520&nologo=true`}
-            alt={`Diagram: ${prompt}`}
-            className={`w-full rounded-xl border border-white/10 transition-opacity duration-500 ${imgLoading ? 'opacity-0' : 'opacity-100'}`}
-            loading="lazy"
-            onLoad={() => setImgLoading(false)}
-            onError={() => { setImgLoading(false); setImgError(true); }}
-          />
-        </div>
-      )}
-      <p className="mt-2 text-[11px] text-slate-500 text-center border-t border-white/10 pt-2">
-        AI-generated visual aid (Pollinations) · Not a source of truth
-      </p>
-    </>
   );
 }

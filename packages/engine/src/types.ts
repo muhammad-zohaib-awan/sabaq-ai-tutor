@@ -77,7 +77,7 @@ export interface InquireSpec {
   openingLine: string;
   suggestedQuestions: string[];
   /** Facts a competent learner should surface. Used as an engagement signal. */
-  mustSurfaceFacts: Array<{ id: string; fact: string; keywords: string[] }>;
+  mustSurfaceFacts: Array<{ id: string; fact: string; keywords: string[]; hint?: string }>;
 }
 
 /** Step 3 - the learner explains it back. This is where mastery evidence is strongest. */
@@ -90,6 +90,8 @@ export interface ExplainSpec {
     weight: number;
   }>;
   modelAnswer: string;
+  /** Short clickable phrases that help a learner start their explanation. */
+  phraseTiles?: string[];
 }
 
 /* ------------------------------------------------- interaction mechanics */
@@ -183,6 +185,18 @@ export interface JourneyStep {
  */
 export type JourneyMode = 'scenario' | 'explain';
 
+/**
+ * The teaching part that comes BEFORE any scenario: what the thing is, in plain
+ * sentences, then the key points, then a worked example for this learner.
+ * Scenario-first without this is testing, not teaching.
+ */
+export interface Lesson {
+  whatItIs: string;
+  keyPoints: string[];
+  example: string;
+  whyItMatters: string;
+}
+
 export interface JourneyMedia {
   /** Prompt for a free, key-less diagram service. Empty string disables it. */
   imagePrompt: string;
@@ -194,9 +208,28 @@ export interface Journey {
   id: string;
   createdAt: string;
   mode: JourneyMode;
+  /**
+   * Plain grounding, before any scenario: what this thing actually IS, in two
+   * to four sentences. Dropping a learner straight into "sort these components"
+   * without ever saying what a lithium battery is fails the person who came to
+   * learn — the scenario tests judgement, the primer supplies the substance.
+   */
+  primer: Localized;
   /** A real-life comparison. The thing learners actually remember a week later. */
   analogy: Localized;
   media: JourneyMedia;
+  /** Plain-sentence lesson shown before the scenario. */
+  lesson?: Lesson;
+  /**
+   * Accurate short facts the model wrote about the topic. For a one-line topic
+   * there is no document, so this is the knowledge base the role-play persona
+   * answers from — without it the chat has nothing to say and refuses everything.
+   */
+  knowledge?: string[];
+  /** 'topic' = the learner only named a subject; 'document' = real source text. */
+  sourceKind?: 'topic' | 'document';
+  /** Free-text constraint the learner typed under "Other". */
+  constraintNote?: string;
   title: Localized;
   missionLabel: Localized;
   topic: string;
@@ -257,6 +290,8 @@ export interface Badge {
   label: string;
   description: string;
   icon: string;
+  /** Shown instead of a line icon. Falls back to a per-icon default. */
+  emoji?: string;
 }
 
 export interface LearnerProgress {
@@ -343,4 +378,6 @@ export interface BuildJourneyInput {
   constraint: OperatingConstraint;
   tone?: Tone;
   difficulty?: number;
+  /** Free text used when the learner picks "Other" for the constraint. */
+  constraintNote?: string;
 }

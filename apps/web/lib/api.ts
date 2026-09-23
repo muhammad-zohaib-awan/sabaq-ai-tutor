@@ -59,6 +59,10 @@ export class ApiError extends Error {
   }
 }
 
+/** The current (answer-free) journey, handed to the local engine only if the API is down. */
+let fallbackJourney: any = null;
+export const setFallbackJourney = (j: any) => (fallbackJourney = j);
+
 /** Set when a call has fallen through to the local engine route. Drives the UI banner. */
 let degradedSince: number | null = null;
 export const isDegraded = () => degradedSince !== null;
@@ -125,10 +129,19 @@ async function requestWithLocalFallback<T>(
   } catch (e: any) {
     const transportFailure = !(e instanceof ApiError) || e.status >= 500;
     if (!transportFailure) throw e;
+    // The local engine accepts JSON only, and only with a valid session.
+    if (init.body instanceof FormData) throw e;
+    const token = session.token();
     const res = await fetch(`/api/engine${localPath}`, {
       method: init.method ?? 'POST',
-      headers: init.body instanceof FormData ? undefined : { 'content-type': 'application/json' },
-      body: init.body as any,
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body:
+        localPath === '/journey' || !fallbackJourney
+          ? (init.body as any)
+          : JSON.stringify({ ...JSON.parse(String(init.body ?? '{}')), journey: fallbackJourney }),
     });
     if (!res.ok) throw e;
     markDegraded();
@@ -151,6 +164,7 @@ export const api = {
       timeoutMs: 60000,
     }),
   me: () => request<SessionUser>('/auth/me'),
+  authOptions: () => request<{ demoRoles: Array<'admin' | 'learner'> }>('/auth/options', { timeoutMs: 15000 }),
 
   /* learning */
   sample: () => request<any>('/learn/sample'),
@@ -183,10 +197,31 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body), timeoutMs: 60000 },
       '/explain',
     ),
-  hint: (journeyId: string, stepId: string, elementId: string) =>
+  reveal: (journeyId: string, stepId: string, language?: string) =>
+    request<any>(`/learn/${journeyId}/reveal`, { method: 'POST', body: JSON.stringify({ stepId, language }) }),
+  /** Mechanic-aware hint based on the learner's current board. */
+  hint: (
+    journeyId: string,
+    body: { stepId: string; states?: Record<string, number>; order?: string[]; optionId?: string | null; nodeId?: string | null; language?: string },
+  ) =>
     request<any>(`/learn/${journeyId}/hint`, {
       method: 'POST',
-      body: JSON.stringify({ stepId, elementId }),
+      body: JSON.stringify({
+        ...body,
+        optionId: body.optionId ?? undefined,
+        nodeId: body.nodeId ?? undefined,
+      }),
+    }),
+  diagramSvg: (journeyId: string, force = false, lang?: string) =>
+    request<{ svg: string; cached?: boolean }>(
+      `/learn/${journeyId}/diagram-svg?${new URLSearchParams({ ...(force ? { force: '1' } : {}), ...(lang ? { lang } : {}) })}`,
+      { method: 'POST', timeoutMs: 45000 },
+    ),
+  translate: (journeyId: string, language: string) =>
+    request<{ journey: any; cached: boolean; complete?: boolean }>(`/learn/${journeyId}/translate`, {
+      method: 'POST',
+      body: JSON.stringify({ language }),
+      timeoutMs: 90000,
     }),
   selfCorrect: (journeyId: string, stepId: string, note: string) =>
     request<any>(`/learn/${journeyId}/self-correct`, {

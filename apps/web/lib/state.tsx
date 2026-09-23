@@ -9,7 +9,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { api, isDegraded, session, type SessionUser } from './api';
+import { api, isDegraded, session, setFallbackJourney, type SessionUser } from './api';
 import type { Lang } from './i18n';
 import { sfxBadge, sfxLevel, sfxXp } from './sound';
 
@@ -24,6 +24,9 @@ export interface BadgeCard {
   label: string;
   description: string;
   icon: string;
+  emoji?: string;
+  /** 'badge' (earned), 'step' (step cleared) or 'level' (level up). Drives the header. */
+  kind?: 'badge' | 'step' | 'level';
   levelUp?: number;
 }
 
@@ -53,7 +56,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<SessionUser | null>(null);
   const [lang, setLangState] = useState<Lang>('en');
-  const [journey, setJourney] = useState<any | null>(null);
+  const [journey, setJourneyState] = useState<any | null>(null);
+  const setJourney = useCallback((j: any | null) => {
+    setFallbackJourney(j);
+    setJourneyState(j);
+  }, []);
   const [learnState, setLearnState] = useState<any | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [badgeQueue, setBadgeQueue] = useState<BadgeCard[]>([]);
@@ -96,7 +103,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const toast = useCallback((kind: Toast['kind'], text: string) => {
     const id = Math.random().toString(36).slice(2, 9);
-    setToasts((t) => [...t, { id, kind, text }]);
+    let dup = false;
+    setToasts((t) => {
+      dup = t.some((x) => x.text === text);
+      return dup ? t : [...t, { id, kind, text }];
+    });
     timers.current[id] = setTimeout(() => {
       setToasts((t) => t.filter((x) => x.id !== id));
       delete timers.current[id];
@@ -150,7 +161,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       degraded,
       setDegraded,
     }),
-    [ready, user, lang, setLang, journey, learnState, refreshState, toasts, toast, badgeQueue, pushBadges, shiftBadge, celebrateXp, degraded],
+    [ready, user, lang, setLang, journey, setJourney, learnState, refreshState, toasts, toast, badgeQueue, pushBadges, shiftBadge, celebrateXp, degraded],
   );
 
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
