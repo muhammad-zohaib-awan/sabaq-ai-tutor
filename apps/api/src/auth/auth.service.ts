@@ -37,17 +37,33 @@ export class AuthService implements OnModuleInit {
   }
 
   private async seed(email: string, password: string, role: Role, name: string) {
-    const existing = await this.store.findUserByEmail(email);
-    if (existing) return;
-    await this.store.saveUser({
-      id: `u_${randomUUID().slice(0, 12)}`,
-      email,
-      name,
-      role,
-      passwordHash: await bcrypt.hash(password, 12),
-      learnerType: process.env.DEFAULT_LEARNER_TYPE ?? 'Curious learner',
-    });
-    this.log.log(`Seeded ${role} account ${email}`);
+    try {
+      const existing = await this.store.findUserByEmail(email);
+      if (existing) {
+        this.log.log(`Seed skipped: ${email} already exists.`);
+        return;
+      }
+      await this.store.saveUser({
+        id: `u_${randomUUID().slice(0, 12)}`,
+        email,
+        name,
+        role,
+        passwordHash: await bcrypt.hash(password, 12),
+        learnerType: process.env.DEFAULT_LEARNER_TYPE ?? 'Curious learner',
+      });
+      this.log.log(`Seeded ${role} account ${email}`);
+    } catch (e: any) {
+      // Postgres unique index (SQLSTATE 23505) fires when the store was in
+      // memory mode when we checked for the account and switched to Postgres
+      // before the insert landed. Not a failure: the row exists, which is
+      // exactly what we wanted. Anything else (permission denied, missing
+      // schema, etc.) still crashes loudly.
+      if (e?.code === '23505' || /duplicate key|unique constraint/i.test(String(e?.message))) {
+        this.log.warn(`Seed skipped (already exists): ${email}`);
+        return;
+      }
+      throw e;
+    }
   }
 
   async login(email: string, password: string) {

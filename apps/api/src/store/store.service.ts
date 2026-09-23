@@ -49,6 +49,9 @@ export class StoreService implements OnModuleInit {
         type: 'postgres',
         url,
         entities: ALL_ENTITIES,
+        // `synchronize` stays on for the demo deployment. Production should use
+        // TypeORM migrations instead; the store layer is already abstracted, so
+        // the swap is contained to this file.
         synchronize: process.env.DB_SYNC !== 'false',
         logging: false,
         ssl: /supabase|render|neon|amazonaws/i.test(url)
@@ -58,25 +61,28 @@ export class StoreService implements OnModuleInit {
             : false,
         extra: { max: Number(process.env.DB_POOL_MAX ?? 5), connectionTimeoutMillis: 10000 },
       });
-      // Connect in the background. Awaiting here blocks the whole boot behind
-      // the driver's connect timeout — on a free-tier container that is dead
-      // air before the port even opens, and a cold start the panel sits through.
-      // Requests that arrive first are served from memory and the store swaps
-      // over the moment Postgres answers.
+
+      // Await the connection BEFORE returning from onModuleInit.
+      //
+      // A background connect (`void ds.initialize()`) is faster to boot but causes
+      // a deterministic race on cold starts: modules that boot after this one —
+      // the auth seed in particular — call findUserByEmail() while the store is
+      // still in memory mode, get an empty result, and then insert a duplicate
+      // row once Postgres answers. Awaiting here costs ~1s of boot time and makes
+      // startup ordering explicit. The catch keeps the memory fallback intact if
+      // the database really is unreachable.
       const ds = this.ds;
-      void ds
-        .initialize()
-        .then(() => {
-          this.mode = 'postgres';
-          this.log.log('Connected to Postgres.');
-        })
-        .catch((e: any) => {
-          this.lastDbError = String(e?.message ?? e).slice(0, 300);
-          this.ds = null;
-          this.log.error(
-            `Postgres unavailable (${this.lastDbError}) — serving from in-memory storage.`,
-          );
-        });
+      try {
+        await ds.initialize();
+        this.mode = 'postgres';
+        this.log.log('Connected to Postgres.');
+      } catch (e: any) {
+        this.lastDbError = String(e?.message ?? e).slice(0, 300);
+        this.ds = null;
+        this.log.error(
+          `Postgres unavailable (${this.lastDbError}) — serving from in-memory storage.`,
+        );
+      }
     } catch (e: any) {
       this.lastDbError = String(e?.message ?? e).slice(0, 300);
       this.ds = null;
