@@ -32,28 +32,51 @@ async function bootstrap() {
     }),
   );
 
+  // CORS_ORIGINS can be a comma-separated list. Add `*` to allow every origin
+  // (dev only — production rejects `*` automatically to avoid accidental exposure).
   const origins = (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // Every Vercel preview of this project carries a hostname like
+  // `sabaq-ai-tutor-web-git-main-<hash>.vercel.app` or
+  // `sabaq-ai-tutor-web-<hash>.vercel.app`. Match by prefix so a preview URL
+  // does not need a manual allow-list entry after every commit.
+  const vercelPrefix = (process.env.VERCEL_PREVIEW_PREFIX ?? 'sabaq-ai-tutor-web').trim();
+
   app.enableCors({
     origin: (origin, cb) => {
-      // Same-origin/server-to-server requests arrive with no Origin header.
+      // Same-origin / server-to-server requests arrive with no Origin header.
       if (!origin) return cb(null, true);
+
+      // Exact matches first.
       if (origins.includes(origin)) return cb(null, true);
-      if (origins.includes('*') && process.env.NODE_ENV !== 'production') return cb(null, true);
+
+      // Wildcard: allowed only outside production, so a misconfigured prod
+      // deployment cannot accidentally expose the API to every origin.
+      if (origins.includes('*') && process.env.NODE_ENV !== 'production') {
+        return cb(null, true);
+      }
+
       // Vercel previews of THIS project only. Matching any *.vercel.app would
-      // let anyone who deploys a site there make credentialed calls.
-      const prefix = process.env.VERCEL_PREVIEW_PREFIX?.trim();
-      if (prefix && process.env.ALLOW_VERCEL_PREVIEWS === 'true') {
+      // let anyone who deploys a site there make calls against this API.
+      if (process.env.ALLOW_VERCEL_PREVIEWS === 'true') {
         try {
           const host = new URL(origin).hostname;
-          if (host.endsWith('.vercel.app') && host.startsWith(prefix)) return cb(null, true);
+          if (
+            host.endsWith('.vercel.app') &&
+            host.startsWith(vercelPrefix)
+          ) {
+            log.log(`CORS: allowing Vercel preview origin ${origin}`);
+            return cb(null, true);
+          }
         } catch {
-          /* malformed origin */
+          /* malformed origin — fall through to rejection */
         }
       }
+
+      log.warn(`CORS: rejecting origin ${origin}`);
       return cb(new Error(`Origin ${origin} is not allowed`), false);
     },
     credentials: false,
@@ -79,6 +102,7 @@ async function bootstrap() {
   const env = envSummary();
   log.log(`Sabaq API listening on :${port} (prefix /api)`);
   log.log(`CORS origins: ${origins.join(', ')}`);
+  log.log(`CORS Vercel previews: ${process.env.ALLOW_VERCEL_PREVIEWS === 'true' ? `enabled for prefix "${vercelPrefix}"` : 'disabled'}`);
   log.log(
     envFilesLoaded.length
       ? `Loaded env from: ${envFilesLoaded.join(', ')}`
